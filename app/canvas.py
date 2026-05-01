@@ -42,6 +42,7 @@ class Canvas(QWidget):
         self._cached_pixmap: Optional[QPixmap] = None
         self._dirty = True
         self._panning = False
+        self.selection_provider = None  # callable -> Optional[Selection]
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
     # --- public API ---
@@ -122,6 +123,22 @@ class Canvas(QWidget):
         painter.setPen(QPen(QColor(0, 0, 0, 200), 1))
         painter.drawRect(target)
 
+        # Selection bbox (dashed)
+        if self.selection_provider is not None:
+            try:
+                sel = self.selection_provider()
+            except Exception:
+                sel = None
+            if sel is not None:
+                bb = sel.bbox
+                sx0, sy0 = self.canvas_to_screen(bb[0], bb[1])
+                sx1, sy1 = self.canvas_to_screen(bb[2], bb[3])
+                pen = QPen(QColor(255, 255, 255, 220), 1, Qt.PenStyle.DashLine)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(sx0, sy0, sx1 - sx0, sy1 - sy0))
+
         if self.tool is not None and hasattr(self.tool, "paint_overlay"):
             try:
                 self.tool.paint_overlay(painter, self)
@@ -153,7 +170,9 @@ class Canvas(QWidget):
         ctx = getattr(tool, "ctx", None)
         if ctx is None:
             return
-        ctx.shift_held = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        mods = e.modifiers()
+        ctx.shift_held = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        ctx.alt_held = bool(mods & Qt.KeyboardModifier.AltModifier)
         try:
             ctx._canvas_zoom = self.zoom  # transform tool uses to size handles
         except Exception:
@@ -209,6 +228,20 @@ class Canvas(QWidget):
 
     def wheelEvent(self, e):  # noqa: N802
         delta = e.angleDelta().y()
+        mods = e.modifiers()
+        step = 40 if delta == 0 else int(delta / 120 * 40)
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            # Horizontal pan.
+            self._pan = QPoint(self._pan.x() + step, self._pan.y())
+            self._auto_fit = False
+            self.update()
+            return
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            # Vertical pan.
+            self._pan = QPoint(self._pan.x(), self._pan.y() + step)
+            self._auto_fit = False
+            self.update()
+            return
         factor = 1.1 if delta > 0 else (1 / 1.1)
         self.zoom = max(0.05, min(32.0, self.zoom * factor))
         self._auto_fit = False

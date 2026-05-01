@@ -1,5 +1,151 @@
 # Changelog
 
+## 2026-05-01 (round 10)
+
+### Added
+- **VSCode-style free-form dock layout that persists.** Enabled
+  `setDockNestingEnabled(True)` plus
+  `AnimatedDocks | AllowNestedDocks | AllowTabbedDocks | GroupedDragging`,
+  and pinned the corners so the left/right side bars run full-height and
+  the bottom panel spans full width. Any panel (Layers, History, Colors,
+  Text, Console, Projects) can be dragged to any edge, split-nested,
+  tabbed onto another panel (`TabPosition.North`), or floated as its
+  own window — drag a tab group as one with grouped dragging. Drop
+  indicators snap to the nearest valid spot edge-to-edge. Layout now
+  saves on every dock move / float toggle / visibility change / window
+  resize+move (debounced 400 ms via `QTimer`) instead of only on close,
+  so a crash no longer loses the layout. Existing
+  `restoreState`/`restoreGeometry` on start-up brings everything back
+  exactly where you left it.
+- **Persistent shape edit handles.** Rectangle and Ellipse drop their
+  bbox + 8 corner/edge handles + center-move region after the initial
+  drag. Drag a handle to resize, drag inside to move, hold Shift for
+  aspect-locked scale or axis-locked move. Click outside the bbox to
+  commit and start a new shape; switching tools also commits. New
+  `_ShapeTool` base in `app/tools.py`; `ToolContext` gained
+  `commit_action` so shape sessions can flush their own history
+  snapshots, and `MainWindow._on_tool_selected` now calls
+  `prev.commit()` for any tool that exposes one.
+- **Five new asset-creation plugins.**
+  - `Drop Shadow` — soft offset shadow with blur + opacity + color.
+  - `Color Replace` — swap a target color (with tolerance) for another.
+  - `Posterize` — quantize each channel to N levels for flat shading.
+  - `Gradient Map` — remap luminance to a 2-color gradient.
+  - `Pixel Art Resize` — nearest-neighbor up/down-scale that preserves
+    crisp pixel edges.
+- **Modifier-scroll canvas pan.** Plain wheel still zooms; **Shift+wheel**
+  pans horizontally, **Ctrl+wheel** pans vertically. Step is derived
+  from `angleDelta().y()` (40 px per notch).
+
+### Fixed
+- **Brush settings only show what the active tool uses, without
+  reflowing the toolbar.** Picked Brush used to display
+  Hardness/Opacity/Spacing/Fill-shape/Tolerance all at once even on
+  tools where those did nothing. Built a per-tool `TOOL_SETTINGS` map;
+  `ToolPanel.set_active_tool(name)` now greys out every setting the
+  active tool doesn't read (kept visible so the toolbar width / widget
+  positions never change between tools — disabled state signals "exists
+  for other tools, inactive now"). Fill / Magic Wand finally get their
+  `Tolerance` slider (was previously dialog-only).
+- **Tool & Brush bar split into two rows.** The single tool toolbar
+  packed buttons + every setting on one line and clipped via the chevron
+  overflow. Now: row 1 is tool buttons (with `addToolBarBreak`); row 2
+  is the per-tool settings strip. Each can be toggled separately under
+  View → Panels.
+- **Project tabs stacked vertically.** The bottom Projects dock used a
+  horizontal row of tabs that scrolled off-screen as soon as you opened
+  more than a few projects. Now stacked top-to-bottom with the `+ New`
+  button at the top and a vertical scroll bar; each tab fills the dock
+  width with a left-aligned label (`text-align: left; padding: 4px 8px`).
+  Drop the dock on a side bar and it behaves like a VSCode explorer
+  pane.
+
+## 2026-04-30 (round 9)
+
+### Fixed
+- **Tool buttons sized to their labels.** Toolbar buttons used a Fixed
+  size policy with no min width, which clipped longer names like
+  "Magic Wand" / "Clone Stamp". They now size to the text width plus
+  padding (and tighter spacing) so every label is fully readable.
+- **Hidden panels reappear on toggle.** The View → Panels checkboxes
+  used `dock.toggleViewAction()` directly, which sometimes left a
+  re-shown dock at zero size (and stuck floating). Replaced with a
+  custom toggle that re-attaches the dock to its initial area, calls
+  `setFloating(False)`, raises it, and forces a sane size via
+  `resizeDocks` if Qt restored it at 0×0.
+- **Recent files persist across sessions.** `MainWindow._recent_files`
+  is now loaded from `QSettings("Layered","Layered")/files/recent` at
+  start-up, saved on every add, and pruned to existing paths only.
+  Added a `Clear Recent` entry. Menu labels now show
+  `<filename> — <parent>` rather than the full path.
+
+### Added
+- **Live text editing.** New `TextPanel` dock (left area) bound to
+  `TextTool`. Click the canvas with the Text tool to drop a dedicated
+  *Text* layer; everything below is rendered live as you type:
+  - Text string (`QLineEdit`).
+  - Font size (`QSpinBox`).
+  - Font family (`QComboBox` populated from `QFontDatabase`).
+  - Color (the existing primary-color swatch is the text color, so
+    color-wheel / palette picks update the text in real time).
+  Drag-clicking on the canvas relocates the in-progress text. Switching
+  to another tool (or the panel's *Commit* button) finalises the text
+  layer and snapshots a history entry. `ToolContext` gained
+  `text_font`.
+
+## 2026-04-30 (round 8)
+
+### Added
+- **Selection model.** New `Selection` (bbox + L-mask) on `Project`.
+  All paint tools (brush, eraser, gradient, blur/sharpen/smudge,
+  clone-stamp) clip stamps through the selection mask via
+  `_apply_selection_to_stamp`, so edits stay inside the marching-ants
+  region.
+- **Marquee, Lasso, Magic Wand selection tools** that all commit a
+  canvas-sized mask through `ToolContext.set_selection` and draw their
+  in-progress rubber-band/polyline as a tool overlay.
+- **Edit menu: Cut / Copy / Paste / Select All / Deselect** with
+  shortcuts `Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A / Ctrl+D`. Copy stores a
+  PIL image of the active layer's pixels masked by the current
+  selection (or the whole canvas if none), Paste creates a new layer
+  positioned at the original bbox.
+- **Gradient tool.** Drag to draw a linear gradient from primary →
+  secondary color. Honors active selection.
+- **Text tool.** Click to drop text. On tool selection a small dialog
+  prompts for string + size; rendered through PIL `ImageDraw.text`
+  using Arial when available, default font otherwise.
+- **Blur / Sharpen / Smudge brushes.** Soft circular brush stamps that
+  apply `ImageFilter.GaussianBlur` / `SHARPEN` / pixel-pull within the
+  brush mask, throttled by the existing brush size / hardness /
+  spacing / opacity settings, and selection-aware.
+- **Clone Stamp tool.** Alt-click to set a source point; subsequent
+  drags stamp the offset region from the source. Honors brush settings
+  + selection.
+- **Filled shapes.** New "Fill shape" toggle in the top toolbar
+  applies to Rectangle / Ellipse — fills with primary color instead of
+  outlining. Holding Shift constrains them to a perfect square /
+  circle.
+- **Selection bbox overlay.** `Canvas` paints a dashed rectangle for
+  any active selection (set via `selection_provider`).
+
+### Changed
+- **Painting lag fixed.** During a stroke, `Canvas.layer_changed`
+  no longer triggers a full `LayerPanel.refresh()` (which rebuilt list
+  rows + thumbnails per move) or a `_refresh_tabs()` (which composited
+  per-project previews). Both run only on `action_committed`. Drawing
+  is dramatically faster.
+- **Plugin polish.**
+  - `Glow Filter`: gained `radius` / `intensity` / `mode`
+    (screen/add/lighten) settings; alpha preserved.
+  - `Normal Map`: settings for `strength`, `invert_x`, `invert_y`, and
+    height `source` (luminance vs alpha).
+  - `Make Tileable`: rewritten as a filter (was an action), with a
+    new `blend_seams` mode that hides cross-tile seams via a
+    Gaussian-blurred composite of a 3×3 self-tiled super-image plus the
+    original `offset` mode.
+- `ToolContext` gained `alt_held`, `fill_shape`, `text`, `text_size`,
+  and `get_selection` / `set_selection` callbacks.
+
 ## 2026-04-30 (round 7)
 
 ### Added

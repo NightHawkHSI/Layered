@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -26,6 +28,8 @@ class _ProjectTab(QWidget):
         self.select_btn.setCheckable(True)
         self.select_btn.setChecked(active)
         self.select_btn.setMinimumWidth(140)
+        self.select_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.select_btn.setStyleSheet("text-align: left; padding: 4px 8px;")
         if thumbnail is not None and not thumbnail.isNull():
             self.select_btn.setIcon(QIcon(thumbnail))
             self.select_btn.setIconSize(QSize(28, 28))
@@ -58,24 +62,25 @@ class ProjectTabs(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._row_widget = QWidget()
-        self._row = QHBoxLayout(self._row_widget)
+        self._row = QVBoxLayout(self._row_widget)
         self._row.setContentsMargins(4, 4, 4, 4)
         self._row.setSpacing(4)
         self._row.addStretch(1)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll.setWidget(self._row_widget)
 
         self.new_btn = QPushButton("+ New")
         self.new_btn.clicked.connect(self.new_requested.emit)
 
-        outer = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.scroll, 1)
+        outer.setSpacing(2)
         outer.addWidget(self.new_btn)
+        outer.addWidget(self.scroll, 1)
 
     def set_projects(self, labels: list[str], active_index: int,
                      thumbnails: Optional[list[QPixmap]] = None) -> None:

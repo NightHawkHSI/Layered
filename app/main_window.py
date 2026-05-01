@@ -46,6 +46,7 @@ from .ui.history_panel import HistoryPanel
 from .ui.layer_panel import LayerPanel
 from .ui.plugin_settings_dialog import PluginSettingsDialog
 from .ui.project_tabs import ProjectTabs
+from .ui.text_panel import TextPanel
 from .ui.tool_panel import ToolPanel
 
 
@@ -108,19 +109,51 @@ class MainWindow(QMainWindow):
         self._recent_files: list[Path] = []
         self._recent_menu: Optional[object] = None
         self._docks: dict[str, QDockWidget] = {}
+        self._initial_dock_area: dict[str, Qt.DockWidgetArea] = {}
         self._settings = QSettings("Layered", "Layered")
+        self._load_recent_files()
+
+        # Allow nested + tabbed dock layouts: panels can be split, stacked,
+        # or tabbed anywhere along the four edges, and dropping one onto
+        # another tabs them together.
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+            | QMainWindow.DockOption.GroupedDragging
+        )
+        # VSCode-style corners: left/right side bars are top-aligned and stop
+        # above the bottom panel, which spans the full width.
+        self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.TopRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        from PyQt6.QtWidgets import QTabWidget
+        self.setTabPosition(Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North)
+        # Debounced save so rapid drag/drop events don't thrash QSettings.
+        from PyQt6.QtCore import QTimer
+        self._layout_save_timer = QTimer(self)
+        self._layout_save_timer.setSingleShot(True)
+        self._layout_save_timer.setInterval(400)
+        self._layout_save_timer.timeout.connect(self._save_layout)
 
         self.tool_ctx = ToolContext()
+        self.tool_ctx.get_selection = lambda: self.current().selection
+        self.tool_ctx.set_selection = self._on_selection_changed
+        self.tool_ctx.commit_action = self._on_action_committed
         self.tools = build_default_tools(self.tool_ctx)
         if "Picker" in self.tools:
             self.tools["Picker"].on_pick = lambda c: self.color_panel.set_primary(c)  # type: ignore[attr-defined]
 
         self.canvas = Canvas(self.current().stack)
+        self.canvas.selection_provider = lambda: self.current().selection
         self.canvas.set_tool(self.tools["Brush"])
         self.canvas.layer_changed.connect(self._on_canvas_changed)
         self.canvas.action_committed.connect(self._on_action_committed)
         self.canvas.images_dropped.connect(self._on_images_dropped)
         self.setCentralWidget(self.canvas)
+        self._copy_buffer = None  # PIL.Image.Image holding last copied region
 
         # --- panels ---
         self.layer_panel = LayerPanel(self.current().stack)
@@ -139,14 +172,32 @@ class MainWindow(QMainWindow):
 
         self.tool_panel = ToolPanel(self.tool_ctx, self.tools, layout="toolbar")
         self.tool_panel.tool_selected.connect(self._on_tool_selected)
-        self._tool_bar = QToolBar("Tools & Brush", self)
+        self._tool_bar = QToolBar("Tools", self)
         self._tool_bar.setObjectName("toolbar.tools")
         self._tool_bar.setMovable(True)
-        self._tool_bar.addWidget(self.tool_panel)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_bar)
+        self.tool_panel.populate_toolbar(self._tool_bar)
+
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self._tool_settings_bar = QToolBar("Tool settings", self)
+        self._tool_settings_bar.setObjectName("toolbar.tool_settings")
+        self._tool_settings_bar.setMovable(True)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_settings_bar)
+        self.tool_panel.populate_settings_toolbar(self._tool_settings_bar)
+
+        for tb in (self._tool_bar, self._tool_settings_bar):
+            tb.topLevelChanged.connect(lambda *_: self._schedule_layout_save())
+            tb.visibilityChanged.connect(lambda *_: self._schedule_layout_save())
 
         self.color_panel = ColorPanel(self.tool_ctx)
         self._add_dock("Colors", self.color_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        # Live text-edit panel.
+        self.text_panel = TextPanel(self.tool_ctx)
+        self.text_panel.changed.connect(self._on_text_changed)
+        self.text_panel.commit_requested.connect(self._on_text_commit)
+        self._add_dock("Text", self.text_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        # Color changes also retrigger live text re-render.
+        self.color_panel.primary_changed.connect(lambda *_: self._on_text_changed())
 
         self.console = LogConsole()
         self._add_dock("Console", self.console, Qt.DockWidgetArea.BottomDockWidgetArea)
@@ -167,7 +218,7 @@ class MainWindow(QMainWindow):
         )
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
-            self.tool_panel.add_tool_button(name)
+            self.tool_panel.add_tool_button(name, toolbar=self._tool_bar)
 
         self._build_menus()
         self._refresh_tabs()
@@ -195,7 +246,28 @@ class MainWindow(QMainWindow):
         for dock in self._docks.values():
             dock.show()
         self._tool_bar.show()
+        self._tool_settings_bar.show()
         self._save_layout()
+
+    def _toggle_dock(self, title: str, visible: bool) -> None:
+        dock = self._docks.get(title)
+        if dock is None:
+            return
+        if visible:
+            # If the dock was floating-and-closed or stuck in a zero-size
+            # area, re-attach to its initial dock area before showing.
+            if not self.dockWidgetArea(dock) or dock.isFloating():
+                area = self._initial_dock_area.get(title, Qt.DockWidgetArea.RightDockWidgetArea)
+                self.addDockWidget(area, dock)
+            dock.setFloating(False)
+            dock.show()
+            dock.raise_()
+            # Force a sane width if Qt restored a 0-size dock.
+            if dock.width() < 80 or dock.height() < 60:
+                self.resizeDocks([dock], [260], Qt.Orientation.Horizontal)
+                self.resizeDocks([dock], [200], Qt.Orientation.Vertical)
+        else:
+            dock.hide()
 
     # --- helpers ---
 
@@ -213,8 +285,19 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.addDockWidget(area, dock)
+        # Persist layout whenever this dock is moved, resized into a new
+        # area, floated, or tabbed. Debounced so a single drag doesn't fire
+        # dozens of QSettings writes.
+        dock.dockLocationChanged.connect(lambda *_: self._schedule_layout_save())
+        dock.topLevelChanged.connect(lambda *_: self._schedule_layout_save())
+        dock.visibilityChanged.connect(lambda *_: self._schedule_layout_save())
         self._docks[title] = dock
+        self._initial_dock_area[title] = area
         return dock
+
+    def _schedule_layout_save(self) -> None:
+        if hasattr(self, "_layout_save_timer"):
+            self._layout_save_timer.start()
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
@@ -243,6 +326,12 @@ class MainWindow(QMainWindow):
         redo_alt.triggered.connect(self._on_redo)
         self.addAction(redo_alt)
         edit_menu.addSeparator()
+        edit_menu.addAction(self._act("Cut", self._on_cut, "Ctrl+X"))
+        edit_menu.addAction(self._act("Copy", self._on_copy, "Ctrl+C"))
+        edit_menu.addAction(self._act("Paste", self._on_paste, "Ctrl+V"))
+        edit_menu.addAction(self._act("Select All", self._on_select_all, "Ctrl+A"))
+        edit_menu.addAction(self._act("Deselect", self._on_deselect, "Ctrl+D"))
+        edit_menu.addSeparator()
         edit_menu.addAction(self._act("Resize Canvas…", self._on_resize_canvas))
         edit_menu.addAction(self._act("Clear Active Layer", self._on_clear_layer))
         edit_menu.addAction(self._act("Delete Active Layer", self._on_delete_layer, "Ctrl+Delete"))
@@ -252,14 +341,35 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._act("Zoom 100%", lambda: self._set_zoom(1.0), "Ctrl+1"))
         view_menu.addSeparator()
         panels_menu = view_menu.addMenu("Panels")
+        # Use a custom toggle (not dock.toggleViewAction()) so we can force a
+        # re-attach + resize when bringing a previously-closed panel back —
+        # otherwise the dock occasionally restores at zero size and looks
+        # missing until the program is restarted.
         for title, dock in self._docks.items():
-            act = dock.toggleViewAction()
-            act.setText(title)
+            act = QAction(title, self)
+            act.setCheckable(True)
+            act.setChecked(dock.isVisible())
+            # `triggered` fires only on user activation; `setChecked` from
+            # the visibilityChanged sync below would re-emit `toggled` and
+            # cause infinite recursion.
+            act.triggered.connect(lambda checked, t=title: self._toggle_dock(t, checked))
+            dock.visibilityChanged.connect(
+                lambda vis, a=act: a.setChecked(bool(vis))
+            )
             panels_menu.addAction(act)
         panels_menu.addSeparator()
-        toolbar_act = self._tool_bar.toggleViewAction()
-        toolbar_act.setText("Tools && Brush bar")
+        toolbar_act = QAction("Tools bar", self)
+        toolbar_act.setCheckable(True)
+        toolbar_act.setChecked(self._tool_bar.isVisible())
+        toolbar_act.triggered.connect(lambda checked: self._tool_bar.setVisible(checked))
+        self._tool_bar.visibilityChanged.connect(toolbar_act.setChecked)
         panels_menu.addAction(toolbar_act)
+        settings_bar_act = QAction("Tool settings bar", self)
+        settings_bar_act.setCheckable(True)
+        settings_bar_act.setChecked(self._tool_settings_bar.isVisible())
+        settings_bar_act.triggered.connect(lambda checked: self._tool_settings_bar.setVisible(checked))
+        self._tool_settings_bar.visibilityChanged.connect(settings_bar_act.setChecked)
+        panels_menu.addAction(settings_bar_act)
         view_menu.addSeparator()
         view_menu.addAction(self._act("Reset Layout", self._reset_layout))
 
@@ -318,6 +428,9 @@ class MainWindow(QMainWindow):
         self.layer_panel.stack = proj.stack
         self.layer_panel.refresh()
         self._refresh_history_panel()
+        text_tool = self.tools.get("Text") if hasattr(self, "tools") else None
+        if text_tool is not None:
+            text_tool.attach_stack(proj.stack)
         self.setWindowTitle(f"Layered — {proj.display_name()}")
 
     def _refresh_history_panel(self) -> None:
@@ -409,8 +522,12 @@ class MainWindow(QMainWindow):
     # --- slots ---
 
     def _on_canvas_changed(self) -> None:
-        self.layer_panel.refresh()
-        self._mark_dirty()
+        # Intentionally skip layer_panel.refresh / _refresh_tabs during stroke:
+        # those rebuild list rows + thumbnails and dominated paint cost.
+        # They run again on action_committed.
+        proj = self.current()
+        if not proj.dirty:
+            proj.dirty = True
 
     def _on_layer_panel_changed(self) -> None:
         self.canvas.refresh()
@@ -418,6 +535,8 @@ class MainWindow(QMainWindow):
 
     def _on_action_committed(self, label: str) -> None:
         self.current().commit(label)
+        self.layer_panel.refresh()
+        self._refresh_tabs()
         self._refresh_history_panel()
 
     def _apply_snapshot_stack(self, new_stack: LayerStack) -> None:
@@ -455,11 +574,57 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Jump: {snap.label}")
 
     def _on_tool_selected(self, name: str) -> None:
+        # Switching away from Text — finalise any in-progress text layer.
+        prev = self.canvas.tool
+        if prev is self.tools.get("Text") and name != "Text":
+            self._on_text_commit()
         tool = self.tools.get(name)
-        if tool is not None:
-            self.canvas.set_tool(tool)
-            self.statusBar().showMessage(f"Tool: {name}")
-            self.log.info("Tool selected: %s", name)
+        if tool is None:
+            return
+        # Generic commit-on-switch: shape tools (and any tool that exposes
+        # `commit() -> Optional[str]`) flush their pending state here.
+        if (prev is not None and prev is not tool
+                and prev is not self.tools.get("Text")
+                and hasattr(prev, "commit")):
+            try:
+                label = prev.commit()
+            except Exception:
+                label = None
+            if label:
+                self._on_action_committed(label)
+        if name == "Text":
+            text_tool = tool
+            text_tool.attach_stack(self.current().stack)
+            # Surface the Text panel + a tip so the user knows where to edit.
+            dock = self._docks.get("Text")
+            if dock is not None:
+                dock.show()
+                dock.raise_()
+            self.statusBar().showMessage(
+                "Text tool: click on canvas, edit live in the Text panel, switch tools to commit."
+            )
+        self.canvas.set_tool(tool)
+        self.tool_panel.set_active_tool(name)
+        self.statusBar().showMessage(f"Tool: {name}")
+        self.log.info("Tool selected: %s", name)
+
+    def _on_text_changed(self) -> None:
+        text_tool = self.tools.get("Text")
+        if text_tool is None:
+            return
+        # Only re-render when text tool is active and editing a live layer.
+        if self.canvas.tool is not text_tool:
+            return
+        text_tool.rerender()
+        self.canvas.refresh()
+
+    def _on_text_commit(self) -> None:
+        text_tool = self.tools.get("Text")
+        if text_tool is None:
+            return
+        label = text_tool.commit()
+        if label:
+            self._on_action_committed(label)
 
     def _on_new(self) -> None:
         dlg = NewCanvasDialog(self)
@@ -501,6 +666,28 @@ class MainWindow(QMainWindow):
         self._recent_files = [p] + [q for q in self._recent_files if q != p]
         del self._recent_files[10:]
         self._refresh_recent_menu()
+        self._save_recent_files()
+
+    def _load_recent_files(self) -> None:
+        raw = self._settings.value("files/recent", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        elif raw is None:
+            raw = []
+        out: list[Path] = []
+        for s in raw:
+            try:
+                p = Path(str(s))
+                if p.exists():
+                    out.append(p)
+            except Exception:
+                continue
+        self._recent_files = out[:10]
+
+    def _save_recent_files(self) -> None:
+        self._settings.setValue(
+            "files/recent", [str(p) for p in self._recent_files]
+        )
 
     def _refresh_recent_menu(self) -> None:
         if self._recent_menu is None:
@@ -512,7 +699,15 @@ class MainWindow(QMainWindow):
             self._recent_menu.addAction(placeholder)
             return
         for p in self._recent_files:
-            self._recent_menu.addAction(self._act(str(p), lambda _=False, q=p: self._open_image_path(q)))
+            label = f"{p.name}  —  {p.parent}"
+            self._recent_menu.addAction(self._act(label, lambda _=False, q=p: self._open_image_path(q)))
+        self._recent_menu.addSeparator()
+        self._recent_menu.addAction(self._act("Clear Recent", self._clear_recent))
+
+    def _clear_recent(self) -> None:
+        self._recent_files = []
+        self._save_recent_files()
+        self._refresh_recent_menu()
 
     def _on_open_layer(self) -> None:
         start = str(self._last_open_dir) if self._last_open_dir else ""
@@ -734,6 +929,90 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._on_action_committed(f"Action: {name}")
 
+    # --- selection / clipboard ---
+
+    def _on_selection_changed(self, sel) -> None:
+        proj = self.current()
+        proj.selection = sel
+        self.canvas.refresh()
+
+    def _on_select_all(self) -> None:
+        from .project import Selection
+        proj = self.current()
+        cw, ch = proj.stack.width, proj.stack.height
+        proj.selection = Selection.rect(0, 0, cw, ch, cw, ch)
+        self.canvas.refresh()
+
+    def _on_deselect(self) -> None:
+        proj = self.current()
+        if proj.selection is None:
+            return
+        proj.selection = None
+        self.canvas.refresh()
+
+    def _selection_or_full(self):
+        from .project import Selection
+        proj = self.current()
+        if proj.selection is not None:
+            return proj.selection
+        cw, ch = proj.stack.width, proj.stack.height
+        return Selection.rect(0, 0, cw, ch, cw, ch)
+
+    def _on_copy(self) -> None:
+        proj = self.current()
+        layer = proj.stack.active
+        if layer is None:
+            return
+        sel = self._selection_or_full()
+        bb = sel.bbox
+        # Pull canvas-space layer pixels (account for offset).
+        ox, oy = layer.offset
+        cw, ch = proj.stack.width, proj.stack.height
+        tmp = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        tmp.paste(layer.image, (ox, oy), layer.image)
+        cropped = tmp.crop(bb)
+        sub_mask = sel.mask.crop(bb)
+        cropped.putalpha(Image.eval(sub_mask, lambda v: v))
+        # Multiply original alpha with selection mask.
+        from PIL import ImageChops
+        a = tmp.crop(bb).split()[3]
+        cropped.putalpha(ImageChops.multiply(a, sub_mask))
+        self._copy_buffer = (cropped, bb)
+        self.statusBar().showMessage(f"Copied {bb[2]-bb[0]}×{bb[3]-bb[1]} region")
+
+    def _on_cut(self) -> None:
+        self._on_copy()
+        proj = self.current()
+        layer = proj.stack.active
+        if layer is None or self._copy_buffer is None:
+            return
+        # Erase pixels inside selection mask on active layer.
+        sel = self._selection_or_full()
+        ox, oy = layer.offset
+        layer_mask = Image.new("L", layer.image.size, 0)
+        layer_mask.paste(sel.mask, (-ox, -oy))
+        from PIL import ImageChops
+        r, g, b, a = layer.image.split()
+        keep = layer_mask.point(lambda v: 255 - v)
+        a = ImageChops.multiply(a, keep)
+        layer.image = Image.merge("RGBA", (r, g, b, a))
+        proj.stack.invalidate_cache()
+        self.canvas.refresh()
+        self._mark_dirty()
+        self._on_action_committed("Cut selection")
+
+    def _on_paste(self) -> None:
+        if self._copy_buffer is None:
+            return
+        proj = self.current()
+        img, bb = self._copy_buffer
+        canvas_layer = Image.new("RGBA", (proj.stack.width, proj.stack.height), (0, 0, 0, 0))
+        canvas_layer.paste(img, (bb[0], bb[1]), img)
+        proj.stack.add_layer(Layer(name="Pasted", image=canvas_layer))
+        self.canvas.refresh()
+        self._mark_dirty()
+        self._on_action_committed("Paste")
+
     def _on_about(self) -> None:
         QMessageBox.about(
             self,
@@ -745,6 +1024,14 @@ class MainWindow(QMainWindow):
         )
 
     # --- lifecycle ---
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_layout_save()
+
+    def moveEvent(self, event):  # noqa: N802
+        super().moveEvent(event)
+        self._schedule_layout_save()
 
     def closeEvent(self, event):  # noqa: N802
         try:

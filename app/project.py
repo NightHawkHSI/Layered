@@ -10,10 +10,36 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .history import History
 from .layer import Layer, LayerStack
+
+
+@dataclass
+class Selection:
+    """Per-project selection mask in canvas coordinates.
+
+    `mask` is an L-mode image the size of the canvas: 255 = inside,
+    0 = outside. `bbox` is the tight bounding box for fast clipping.
+    """
+    bbox: tuple[int, int, int, int]
+    mask: Image.Image
+
+    @classmethod
+    def rect(cls, x0: int, y0: int, x1: int, y1: int, canvas_w: int, canvas_h: int) -> "Selection":
+        x0, x1 = sorted((max(0, min(canvas_w, int(x0))), max(0, min(canvas_w, int(x1)))))
+        y0, y1 = sorted((max(0, min(canvas_h, int(y0))), max(0, min(canvas_h, int(y1)))))
+        mask = Image.new("L", (canvas_w, canvas_h), 0)
+        ImageDraw.Draw(mask).rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+        return cls(bbox=(x0, y0, x1, y1), mask=mask)
+
+    @classmethod
+    def from_mask(cls, mask: Image.Image) -> Optional["Selection"]:
+        bb = mask.getbbox()
+        if bb is None:
+            return None
+        return cls(bbox=bb, mask=mask)
 
 
 @dataclass
@@ -23,6 +49,7 @@ class Project:
     path: Optional[Path] = None
     dirty: bool = False
     history: History = field(default_factory=lambda: History(max_size=50))
+    selection: Optional[Selection] = None
 
     def commit(self, label: str) -> None:
         self.history.commit(label, self.stack)

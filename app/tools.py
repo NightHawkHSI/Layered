@@ -9,11 +9,11 @@ flow control rather than the previous hard-line behavior.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .layer import Layer
 
@@ -31,6 +31,17 @@ class ToolContext:
     brush_spacing: float = 0.2    # fraction of brush size between stamps
     fill_tolerance: int = 32
     shift_held: bool = False      # set by canvas before each event
+    alt_held: bool = False        # used by clone-stamp & sampling tools
+    fill_shape: bool = False      # rect/ellipse: fill instead of outline
+    text: str = "Text"
+    text_size: int = 32
+    text_font: str = ""           # font family; empty = system default
+    # Project hooks (set by canvas/main window so tools can access selection).
+    get_selection: Optional[Callable[[], object]] = None
+    set_selection: Optional[Callable[[object], None]] = None
+    # Tools that batch multiple presses into one undo step (e.g. shape edit
+    # sessions) call this with their label to flush a history snapshot.
+    commit_action: Optional[Callable[[str], None]] = None
 
 
 class Tool:
@@ -94,20 +105,60 @@ def _scaled_mask(mask: Image.Image, opacity: float) -> Image.Image:
     return mask.point(lambda v: int(v * opacity))
 
 
-def _stamp_color(layer: Layer, x: int, y: int, color: Color, mask: Image.Image, opacity: float) -> None:
+def _selection_at_layer(ctx: ToolContext, layer: Layer) -> Optional[Image.Image]:
+    """Return an L-mask aligned with `layer.image` if a selection is active."""
+    if ctx.get_selection is None:
+        return None
+    sel = ctx.get_selection()
+    if sel is None or getattr(sel, "mask", None) is None:
+        return None
+    canvas_mask: Image.Image = sel.mask
+    ox, oy = layer.offset
+    lw, lh = layer.image.size
+    if canvas_mask.size == (lw, lh) and (ox, oy) == (0, 0):
+        return canvas_mask
+    out = Image.new("L", (lw, lh), 0)
+    out.paste(canvas_mask, (-ox, -oy))
+    return out
+
+
+def _apply_selection_to_stamp(stamp_alpha: Image.Image, ctx: ToolContext, layer: Layer,
+                              dest_xy: tuple[int, int]) -> Image.Image:
+    sel_mask = _selection_at_layer(ctx, layer)
+    if sel_mask is None:
+        return stamp_alpha
+    sw, sh = stamp_alpha.size
+    dx, dy = dest_xy
+    x0 = max(dx, 0); y0 = max(dy, 0)
+    x1 = min(dx + sw, sel_mask.size[0]); y1 = min(dy + sh, sel_mask.size[1])
+    if x1 <= x0 or y1 <= y0:
+        return Image.new("L", (sw, sh), 0)
+    sub = sel_mask.crop((x0, y0, x1, y1))
+    pad = Image.new("L", (sw, sh), 0)
+    pad.paste(sub, (x0 - dx, y0 - dy))
+    return ImageChops.multiply(stamp_alpha, pad)
+
+
+def _stamp_color(layer: Layer, x: int, y: int, color: Color, mask: Image.Image, opacity: float,
+                 ctx: Optional[ToolContext] = None) -> None:
     """Paint a color stamp using `mask` as alpha, blended onto layer.image."""
     r = mask.size[0] // 2
     final_alpha = (color[3] / 255.0) * opacity
     m = _scaled_mask(mask, final_alpha)
+    if ctx is not None:
+        m = _apply_selection_to_stamp(m, ctx, layer, (x - r, y - r))
     stamp = Image.new("RGBA", mask.size, color[:3] + (0,))
     stamp.putalpha(m)
     layer.image.alpha_composite(stamp, dest=(x - r, y - r))
 
 
-def _stamp_erase(layer: Layer, x: int, y: int, mask: Image.Image, opacity: float) -> None:
+def _stamp_erase(layer: Layer, x: int, y: int, mask: Image.Image, opacity: float,
+                 ctx: Optional[ToolContext] = None) -> None:
     """Erase by reducing alpha where `mask` is set."""
     r = mask.size[0] // 2
     m = _scaled_mask(mask, opacity)
+    if ctx is not None:
+        m = _apply_selection_to_stamp(m, ctx, layer, (x - r, y - r))
     s = mask.size[0]
     x0 = max(x - r, 0)
     y0 = max(y - r, 0)
@@ -155,7 +206,7 @@ class BrushTool(Tool):
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._last_pt = (x, y)
         mask = _brush_mask(self.ctx.brush_size, self.ctx.brush_hardness)
-        _stamp_color(layer, x, y, self.ctx.primary_color, mask, self.ctx.brush_opacity)
+        _stamp_color(layer, x, y, self.ctx.primary_color, mask, self.ctx.brush_opacity, ctx=self.ctx)
 
     def move(self, layer: Layer, x: int, y: int) -> None:
         if self._last_pt is None:
@@ -164,7 +215,7 @@ class BrushTool(Tool):
         mask = _brush_mask(self.ctx.brush_size, self.ctx.brush_hardness)
         spacing = self._spacing()
         for px, py in _walk(self._last_pt, (x, y), spacing):
-            _stamp_color(layer, px, py, self.ctx.primary_color, mask, self.ctx.brush_opacity)
+            _stamp_color(layer, px, py, self.ctx.primary_color, mask, self.ctx.brush_opacity, ctx=self.ctx)
         self._last_pt = (x, y)
 
 
@@ -177,7 +228,7 @@ class EraserTool(Tool):
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._last_pt = (x, y)
         mask = _brush_mask(self.ctx.brush_size, self.ctx.brush_hardness)
-        _stamp_erase(layer, x, y, mask, self.ctx.brush_opacity)
+        _stamp_erase(layer, x, y, mask, self.ctx.brush_opacity, ctx=self.ctx)
 
     def move(self, layer: Layer, x: int, y: int) -> None:
         if self._last_pt is None:
@@ -186,7 +237,7 @@ class EraserTool(Tool):
         mask = _brush_mask(self.ctx.brush_size, self.ctx.brush_hardness)
         spacing = self._spacing()
         for px, py in _walk(self._last_pt, (x, y), spacing):
-            _stamp_erase(layer, px, py, mask, self.ctx.brush_opacity)
+            _stamp_erase(layer, px, py, mask, self.ctx.brush_opacity, ctx=self.ctx)
         self._last_pt = (x, y)
 
 
@@ -225,50 +276,261 @@ class LineTool(Tool):
         super().release(layer, x, y)
 
 
-class RectTool(Tool):
+def _shape_geom(origin, x, y, ctx: ToolContext) -> tuple[int, int, int, int]:
+    ox, oy = origin
+    x0, x1 = sorted((ox, x))
+    y0, y1 = sorted((oy, y))
+    if ctx.shift_held:
+        # Square / circle: keep aspect.
+        s = min(x1 - x0, y1 - y0)
+        x1, y1 = x0 + s, y0 + s
+    return x0, y0, x1, y1
+
+
+class _ShapeTool(Tool):
+    """Base for shape tools that stay editable after release.
+
+    After the initial drag, the shape's bbox sticks around with 8 corner /
+    edge handles + a center move region. Dragging a handle resizes; dragging
+    inside the bbox moves; clicking outside commits the current shape and
+    starts a new one. Hold Shift for aspect-locked scale or axis-locked move.
+    Switching tools also commits.
+    """
+    commit_on = None  # we manage our own history snapshots
+    HANDLE_SIZE = 10
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._snapshot: Optional[Image.Image] = None
+        self._bbox: Optional[tuple[int, int, int, int]] = None
+        self._phase: str = "idle"   # idle | drawing | editing | scaling | moving
+        self._anchor: Optional[str] = None
+        self._press_pt: Optional[tuple[int, int]] = None
+        self._bbox_at_press: Optional[tuple[int, int, int, int]] = None
+
+    # subclass hook
+    def _draw(self, layer: Layer, bbox: tuple[int, int, int, int]) -> None:
+        raise NotImplementedError
+
+    # --- handle hit testing ---
+
+    def _hit_handle(self, x: int, y: int) -> Optional[str]:
+        if self._bbox is None:
+            return None
+        x0, y0, x1, y1 = self._bbox
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        handles = {
+            "nw": (x0, y0), "n": (cx, y0), "ne": (x1, y0),
+            "w":  (x0, cy),                "e":  (x1, cy),
+            "sw": (x0, y1), "s": (cx, y1), "se": (x1, y1),
+        }
+        zoom = max(getattr(self.ctx, "_canvas_zoom", 1.0), 1e-6)
+        hit_r = max(8, int(self.HANDLE_SIZE / zoom))
+        best: Optional[tuple[str, int]] = None
+        for name, (hx, hy) in handles.items():
+            d = (x - hx) ** 2 + (y - hy) ** 2
+            if d <= hit_r * hit_r and (best is None or d < best[1]):
+                best = (name, d)
+        if best:
+            return best[0]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return "move"
+        return None
+
+    # --- events ---
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._phase == "editing":
+            hit = self._hit_handle(x, y)
+            if hit == "move":
+                self._phase = "moving"
+                self._press_pt = (x, y)
+                self._bbox_at_press = self._bbox
+                return
+            if hit is not None:
+                self._phase = "scaling"
+                self._anchor = hit
+                self._press_pt = (x, y)
+                self._bbox_at_press = self._bbox
+                return
+            # Outside bbox — commit current and begin a new shape.
+            self._commit_session()
+        # New session.
+        self._snapshot = layer.image.copy()
+        self._bbox = (x, y, x, y)
+        self._phase = "drawing"
+        self._press_pt = (x, y)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._phase == "drawing":
+            ox, oy = self._press_pt or (x, y)
+            x0, x1 = sorted((ox, x))
+            y0, y1 = sorted((oy, y))
+            if self.ctx.shift_held:
+                s = min(x1 - x0, y1 - y0)
+                if x >= ox:
+                    x1 = x0 + s
+                else:
+                    x0 = x1 - s
+                if y >= oy:
+                    y1 = y0 + s
+                else:
+                    y0 = y1 - s
+            self._bbox = (x0, y0, x1, y1)
+            self._render(layer)
+        elif self._phase == "scaling":
+            if self._bbox_at_press is None or self._press_pt is None:
+                return
+            x0, y0, x1, y1 = self._bbox_at_press
+            px, py = self._press_pt
+            dx, dy = x - px, y - py
+            a = self._anchor or ""
+            nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+            if "w" in a: nx0 += dx
+            if "e" in a: nx1 += dx
+            if "n" in a: ny0 += dy
+            if "s" in a: ny1 += dy
+            nx0, nx1 = sorted((nx0, nx1))
+            ny0, ny1 = sorted((ny0, ny1))
+            if self.ctx.shift_held:
+                ow = max(1, x1 - x0); oh = max(1, y1 - y0)
+                nw = max(1, nx1 - nx0); nh = max(1, ny1 - ny0)
+                scale = max(nw / ow, nh / oh)
+                tw = max(1, int(round(ow * scale)))
+                th = max(1, int(round(oh * scale)))
+                if "e" in a:
+                    nx0, nx1 = x0, x0 + tw
+                elif "w" in a:
+                    nx0, nx1 = x1 - tw, x1
+                else:
+                    cx = (x0 + x1) // 2
+                    nx0, nx1 = cx - tw // 2, cx - tw // 2 + tw
+                if "s" in a:
+                    ny0, ny1 = y0, y0 + th
+                elif "n" in a:
+                    ny0, ny1 = y1 - th, y1
+                else:
+                    cy = (y0 + y1) // 2
+                    ny0, ny1 = cy - th // 2, cy - th // 2 + th
+            self._bbox = (nx0, ny0, nx1, ny1)
+            self._render(layer)
+        elif self._phase == "moving":
+            if self._bbox_at_press is None or self._press_pt is None:
+                return
+            x0, y0, x1, y1 = self._bbox_at_press
+            px, py = self._press_pt
+            dx, dy = x - px, y - py
+            if self.ctx.shift_held:
+                # Lock to the dominant axis.
+                if abs(dx) > abs(dy):
+                    dy = 0
+                else:
+                    dx = 0
+            self._bbox = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._render(layer)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        if self._phase in ("drawing", "scaling", "moving"):
+            self._phase = "editing"
+            self._anchor = None
+            self._press_pt = None
+            self._bbox_at_press = None
+        super().release(layer, x, y)
+
+    # --- render / commit ---
+
+    def _render(self, layer: Layer) -> None:
+        if self._snapshot is None or self._bbox is None:
+            return
+        layer.image = self._snapshot.copy()
+        self._draw(layer, self._bbox)
+
+    def _commit_session(self) -> None:
+        """Flush the in-progress shape as its own history snapshot."""
+        ca = getattr(self.ctx, "commit_action", None)
+        if ca is not None and self._snapshot is not None and self._bbox is not None:
+            try:
+                ca(self.name)
+            except Exception:
+                pass
+        self._snapshot = None
+        self._bbox = None
+        self._phase = "idle"
+        self._anchor = None
+        self._press_pt = None
+        self._bbox_at_press = None
+
+    def commit(self) -> Optional[str]:
+        """Called by the host on tool switch. Returns label or None."""
+        if self._snapshot is None or self._bbox is None:
+            label = None
+        else:
+            label = self.name
+        self._snapshot = None
+        self._bbox = None
+        self._phase = "idle"
+        self._anchor = None
+        self._press_pt = None
+        self._bbox_at_press = None
+        return label
+
+    # --- overlay ---
+
+    def paint_overlay(self, painter, canvas) -> None:
+        if self._bbox is None or self._phase == "idle":
+            return
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtGui import QColor, QPen
+        x0, y0, x1, y1 = self._bbox
+        sx0, sy0 = canvas.canvas_to_screen(x0, y0)
+        sx1, sy1 = canvas.canvas_to_screen(x1, y1)
+        rect = QRect(int(min(sx0, sx1)), int(min(sy0, sy1)),
+                     int(abs(sx1 - sx0)), int(abs(sy1 - sy0)))
+        pen = QPen(QColor(0, 200, 255, 220), 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(QColor(0, 0, 0, 0))
+        painter.drawRect(rect)
+        if self._phase == "drawing":
+            return
+        painter.setBrush(QColor(255, 255, 255, 255))
+        cx = rect.center().x()
+        cy = rect.center().y()
+        hs = self.HANDLE_SIZE
+        for hx, hy in (
+            (rect.left(), rect.top()), (cx, rect.top()), (rect.right(), rect.top()),
+            (rect.left(), cy),                            (rect.right(), cy),
+            (rect.left(), rect.bottom()), (cx, rect.bottom()), (rect.right(), rect.bottom()),
+        ):
+            painter.drawRect(int(hx - hs / 2), int(hy - hs / 2), hs, hs)
+
+
+class RectTool(_ShapeTool):
     name = "Rectangle"
 
-    def press(self, layer: Layer, x: int, y: int) -> None:
-        self._origin = (x, y)
-        self._snapshot = layer.image.copy()
-
-    def move(self, layer: Layer, x: int, y: int) -> None:
-        if not getattr(self, "_origin", None):
-            return
-        layer.image = self._snapshot.copy()
-        ox, oy = self._origin
-        x0, x1 = sorted((ox, x))
-        y0, y1 = sorted((oy, y))
-        ImageDraw.Draw(layer.image).rectangle(
-            [x0, y0, x1, y1], outline=self.ctx.primary_color, width=self.ctx.brush_size
-        )
-
-    def release(self, layer: Layer, x: int, y: int) -> None:
-        self._origin = None
-        super().release(layer, x, y)
+    def _draw(self, layer: Layer, bbox: tuple[int, int, int, int]) -> None:
+        x0, y0, x1, y1 = bbox
+        d = ImageDraw.Draw(layer.image)
+        if self.ctx.fill_shape:
+            d.rectangle([x0, y0, x1, y1], fill=self.ctx.primary_color,
+                        outline=self.ctx.primary_color, width=self.ctx.brush_size)
+        else:
+            d.rectangle([x0, y0, x1, y1], outline=self.ctx.primary_color,
+                        width=self.ctx.brush_size)
 
 
-class EllipseTool(Tool):
+class EllipseTool(_ShapeTool):
     name = "Ellipse"
 
-    def press(self, layer: Layer, x: int, y: int) -> None:
-        self._origin = (x, y)
-        self._snapshot = layer.image.copy()
-
-    def move(self, layer: Layer, x: int, y: int) -> None:
-        if not getattr(self, "_origin", None):
-            return
-        layer.image = self._snapshot.copy()
-        ox, oy = self._origin
-        x0, x1 = sorted((ox, x))
-        y0, y1 = sorted((oy, y))
-        ImageDraw.Draw(layer.image).ellipse(
-            [x0, y0, x1, y1], outline=self.ctx.primary_color, width=self.ctx.brush_size
-        )
-
-    def release(self, layer: Layer, x: int, y: int) -> None:
-        self._origin = None
-        super().release(layer, x, y)
+    def _draw(self, layer: Layer, bbox: tuple[int, int, int, int]) -> None:
+        x0, y0, x1, y1 = bbox
+        d = ImageDraw.Draw(layer.image)
+        if self.ctx.fill_shape:
+            d.ellipse([x0, y0, x1, y1], fill=self.ctx.primary_color,
+                      outline=self.ctx.primary_color, width=self.ctx.brush_size)
+        else:
+            d.ellipse([x0, y0, x1, y1], outline=self.ctx.primary_color,
+                      width=self.ctx.brush_size)
 
 
 class PickerTool(Tool):
@@ -497,15 +759,482 @@ class TransformTool(Tool):
             painter.drawRect(int(hx - hs / 2), int(hy - hs / 2), hs, hs)
 
 
+# --- selection / paint tools added in round 8 -------------------------------
+
+
+class _SelectionToolBase(Tool):
+    """Shared helpers for marquee / lasso / magic-wand."""
+    commit_on = None  # selection isn't a layer-image change; no history snap
+
+    def _commit_mask(self, mask: Image.Image) -> None:
+        if self.ctx.set_selection is None:
+            return
+        from .project import Selection
+        sel = Selection.from_mask(mask)
+        self.ctx.set_selection(sel)
+
+
+class MarqueeTool(_SelectionToolBase):
+    """Drag a rectangular selection."""
+    name = "Marquee"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._origin = (x, y)
+        self._cur = (x, y)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if getattr(self, "_origin", None) is None:
+            return
+        self._cur = (x, y)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        if getattr(self, "_origin", None) is None:
+            return
+        ox, oy = self._origin
+        x0, x1 = sorted((ox, x)); y0, y1 = sorted((oy, y))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            if self.ctx.set_selection is not None:
+                self.ctx.set_selection(None)
+        else:
+            from .project import Selection
+            cw, ch = layer.image.size
+            ox_, oy_ = layer.offset
+            sel = Selection.rect(x0 + ox_, y0 + oy_, x1 + ox_, y1 + oy_, cw + ox_, ch + oy_)
+            if self.ctx.set_selection is not None:
+                self.ctx.set_selection(sel)
+        self._origin = None
+        self._cur = None
+        super().release(layer, x, y)
+
+    def paint_overlay(self, painter, canvas) -> None:
+        if getattr(self, "_origin", None) is None or getattr(self, "_cur", None) is None:
+            return
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtGui import QColor, QPen
+        ox, oy = self._origin
+        cx, cy = self._cur
+        sx0, sy0 = canvas.canvas_to_screen(ox, oy)
+        sx1, sy1 = canvas.canvas_to_screen(cx, cy)
+        rect = QRect(int(min(sx0, sx1)), int(min(sy0, sy1)),
+                     int(abs(sx1 - sx0)), int(abs(sy1 - sy0)))
+        pen = QPen(QColor(255, 255, 255, 220), 1, Qt_DashLine())
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt_NoBrush())
+        painter.drawRect(rect)
+
+
+class LassoTool(_SelectionToolBase):
+    """Freehand polygon selection."""
+    name = "Lasso"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._points: list[tuple[int, int]] = [(x, y)]
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        pts = getattr(self, "_points", None)
+        if pts is None:
+            return
+        if not pts or (x, y) != pts[-1]:
+            pts.append((x, y))
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        pts = getattr(self, "_points", None)
+        if pts is None or len(pts) < 3:
+            self._points = None
+            return
+        cw, ch = layer.image.size
+        ox, oy = layer.offset
+        canvas_w = cw + ox
+        canvas_h = ch + oy
+        mask = Image.new("L", (canvas_w, canvas_h), 0)
+        ImageDraw.Draw(mask).polygon([(px + ox, py + oy) for px, py in pts], fill=255)
+        self._commit_mask(mask)
+        self._points = None
+        super().release(layer, x, y)
+
+    def paint_overlay(self, painter, canvas) -> None:
+        pts = getattr(self, "_points", None)
+        if not pts or len(pts) < 2:
+            return
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QColor, QPen, QPolygon
+        pen = QPen(QColor(255, 255, 255, 220), 1, Qt_DashLine())
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt_NoBrush())
+        poly = QPolygon([QPoint(int(canvas.canvas_to_screen(px, py)[0]),
+                                 int(canvas.canvas_to_screen(px, py)[1])) for px, py in pts])
+        painter.drawPolyline(poly)
+
+
+def Qt_DashLine():
+    from PyQt6.QtCore import Qt
+    return Qt.PenStyle.DashLine
+
+
+def Qt_NoBrush():
+    from PyQt6.QtCore import Qt
+    return Qt.BrushStyle.NoBrush
+
+
+class MagicWandTool(_SelectionToolBase):
+    """Click to select all contiguous pixels within tolerance of clicked color."""
+    name = "Magic Wand"
+    commit_on = None
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        if not (0 <= x < layer.image.width and 0 <= y < layer.image.height):
+            return
+        arr = np.asarray(layer.image.convert("RGBA"), dtype=np.int16)
+        target = arr[y, x].astype(np.int16)
+        tol = max(0, int(self.ctx.fill_tolerance))
+        diff = np.abs(arr - target).max(axis=-1)
+        match = (diff <= tol)
+        # Flood fill from (x,y) restricted to `match` to keep contiguous region.
+        h, w = match.shape
+        visited = np.zeros_like(match)
+        stack = [(x, y)]
+        while stack:
+            px, py = stack.pop()
+            if px < 0 or py < 0 or px >= w or py >= h:
+                continue
+            if visited[py, px] or not match[py, px]:
+                continue
+            visited[py, px] = True
+            stack.extend(((px + 1, py), (px - 1, py), (px, py + 1), (px, py - 1)))
+        ox, oy = layer.offset
+        canvas_mask = Image.new("L", (w + ox, h + oy), 0)
+        layer_mask = Image.fromarray((visited * 255).astype(np.uint8), mode="L")
+        canvas_mask.paste(layer_mask, (ox, oy))
+        self._commit_mask(canvas_mask)
+
+
+class GradientTool(Tool):
+    """Drag to draw a linear gradient from primary -> secondary color."""
+    name = "Gradient"
+    commit_on = "release"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._origin = (x, y)
+        self._snapshot = layer.image.copy()
+        self._cur = (x, y)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if getattr(self, "_origin", None) is None:
+            return
+        self._cur = (x, y)
+        self._render(layer, x, y)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        if getattr(self, "_origin", None) is None:
+            return
+        self._render(layer, x, y)
+        self._origin = None
+        super().release(layer, x, y)
+
+    def _render(self, layer: Layer, x: int, y: int) -> None:
+        layer.image = self._snapshot.copy()
+        ox, oy = self._origin
+        dx, dy = x - ox, y - oy
+        length2 = dx * dx + dy * dy
+        if length2 <= 0:
+            return
+        w, h = layer.image.size
+        ys, xs = np.mgrid[0:h, 0:w]
+        t = ((xs - ox) * dx + (ys - oy) * dy) / length2
+        t = np.clip(t, 0.0, 1.0).astype(np.float32)
+        c1 = np.array(self.ctx.primary_color, dtype=np.float32)
+        c2 = np.array(self.ctx.secondary_color, dtype=np.float32)
+        out = c1 * (1 - t)[..., None] + c2 * t[..., None]
+        out = np.clip(out, 0, 255).astype(np.uint8)
+        grad = Image.fromarray(out, mode="RGBA")
+        # Respect selection if any.
+        sel_mask = _selection_at_layer(self.ctx, layer)
+        if sel_mask is not None:
+            grad_alpha = grad.split()[3]
+            grad.putalpha(ImageChops.multiply(grad_alpha, sel_mask))
+        layer.image.alpha_composite(grad)
+
+
+class TextTool(Tool):
+    """Click to drop a re-editable text layer.
+
+    On press, creates (or moves) a dedicated text layer, then re-renders it
+    live as the Text panel updates `ctx.text` / `ctx.text_size` /
+    `ctx.text_font` / `ctx.primary_color`. Switching tools or pressing
+    `commit()` finalises the current text and clears tool state.
+    """
+    name = "Text"
+    commit_on = None  # we manage commits ourselves through canvas.action_committed
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._target_stack = None  # set externally so we can add layers
+        self._target_layer: Optional[Layer] = None
+        self._position: tuple[int, int] = (0, 0)
+
+    def attach_stack(self, stack) -> None:
+        self._target_stack = stack
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._target_stack is None:
+            return
+        if self._target_layer is None or self._target_layer not in self._target_stack.layers:
+            new_layer = Layer(
+                name="Text",
+                image=Image.new("RGBA", (self._target_stack.width, self._target_stack.height), (0, 0, 0, 0)),
+            )
+            self._target_stack.add_layer(new_layer)
+            self._target_layer = new_layer
+        self._position = (x, y)
+        self.rerender()
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        # Drag to relocate text.
+        if self._target_layer is None:
+            return
+        self._position = (x, y)
+        self.rerender()
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        super().release(layer, x, y)
+
+    def rerender(self) -> None:
+        if self._target_layer is None or self._target_stack is None:
+            return
+        text = self.ctx.text or ""
+        size = max(4, int(self.ctx.text_size))
+        font = self._load_font(getattr(self.ctx, "text_font", "") or "", size)
+        canvas = Image.new(
+            "RGBA",
+            (self._target_stack.width, self._target_stack.height),
+            (0, 0, 0, 0),
+        )
+        if text:
+            d = ImageDraw.Draw(canvas)
+            d.text(self._position, text, fill=self.ctx.primary_color, font=font)
+        self._target_layer.image = canvas
+        self._target_stack.invalidate_cache()
+
+    def commit(self) -> Optional[str]:
+        """Stop editing the current text layer. Returns the label or None."""
+        if self._target_layer is None:
+            return None
+        label = f"Text: {self.ctx.text or ''}"[:40]
+        self._target_layer = None
+        return label
+
+    def _load_font(self, family: str, size: int):
+        # Try a TrueType font; fall back to default. Allow selecting by family
+        # name (Qt's font-name) by mapping to common TTFs on Windows.
+        candidates = []
+        if family:
+            candidates.append(family)
+            candidates.append(f"{family}.ttf")
+            candidates.append(f"{family.lower()}.ttf")
+        candidates.extend(["arial.ttf", "Arial.ttf", "DejaVuSans.ttf"])
+        for c in candidates:
+            try:
+                return ImageFont.truetype(c, size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+
+# --- pixel-sample brushes ---------------------------------------------------
+
+
+def _local_filter_stamp(layer: Layer, ctx: ToolContext, x: int, y: int,
+                        filt: ImageFilter.Filter) -> None:
+    """Apply a PIL filter inside the brush mask area."""
+    size = ctx.brush_size
+    r = size // 2
+    x0 = max(x - r, 0); y0 = max(y - r, 0)
+    x1 = min(x - r + size, layer.image.width)
+    y1 = min(y - r + size, layer.image.height)
+    if x1 <= x0 or y1 <= y0:
+        return
+    region = layer.image.crop((x0, y0, x1, y1))
+    blurred = region.filter(filt)
+    mask = _brush_mask(size, ctx.brush_hardness)
+    mx0 = x0 - (x - r); my0 = y0 - (y - r)
+    mx1 = mx0 + (x1 - x0); my1 = my0 + (y1 - y0)
+    sub_mask = mask.crop((mx0, my0, mx1, my1))
+    sub_mask = sub_mask.point(lambda v: int(v * ctx.brush_opacity))
+    sel_mask = _selection_at_layer(ctx, layer)
+    if sel_mask is not None:
+        sub_sel = sel_mask.crop((x0, y0, x1, y1))
+        sub_mask = ImageChops.multiply(sub_mask, sub_sel)
+    blurred.putalpha(sub_mask)
+    layer.image.alpha_composite(blurred, dest=(x0, y0))
+
+
+class BlurTool(Tool):
+    name = "Blur"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._last_pt = (x, y)
+        _local_filter_stamp(layer, self.ctx, x, y,
+                            ImageFilter.GaussianBlur(radius=max(1, self.ctx.brush_size // 4)))
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._last_pt is None:
+            self._last_pt = (x, y)
+            return
+        spacing = max(1.0, self.ctx.brush_size * self.ctx.brush_spacing)
+        f = ImageFilter.GaussianBlur(radius=max(1, self.ctx.brush_size // 4))
+        for px, py in _walk(self._last_pt, (x, y), spacing):
+            _local_filter_stamp(layer, self.ctx, px, py, f)
+        self._last_pt = (x, y)
+
+
+class SharpenTool(Tool):
+    name = "Sharpen"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._last_pt = (x, y)
+        _local_filter_stamp(layer, self.ctx, x, y, ImageFilter.SHARPEN)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._last_pt is None:
+            self._last_pt = (x, y)
+            return
+        spacing = max(1.0, self.ctx.brush_size * self.ctx.brush_spacing)
+        for px, py in _walk(self._last_pt, (x, y), spacing):
+            _local_filter_stamp(layer, self.ctx, px, py, ImageFilter.SHARPEN)
+        self._last_pt = (x, y)
+
+
+class SmudgeTool(Tool):
+    """Pull the pixels at the previous sample point along the stroke direction."""
+    name = "Smudge"
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        self._last_pt = (x, y)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._last_pt is None:
+            self._last_pt = (x, y)
+            return
+        size = self.ctx.brush_size
+        r = size // 2
+        sx, sy = self._last_pt
+        sx0 = max(sx - r, 0); sy0 = max(sy - r, 0)
+        sx1 = min(sx - r + size, layer.image.width)
+        sy1 = min(sy - r + size, layer.image.height)
+        if sx1 <= sx0 or sy1 <= sy0:
+            self._last_pt = (x, y)
+            return
+        sample = layer.image.crop((sx0, sy0, sx1, sy1))
+        mask = _brush_mask(sx1 - sx0, self.ctx.brush_hardness)
+        # Reduced opacity per stamp keeps smudge progressive.
+        opa = max(0.05, min(1.0, self.ctx.brush_opacity * 0.4))
+        m = mask.point(lambda v: int(v * opa))
+        sel_mask = _selection_at_layer(self.ctx, layer)
+        dx = x - r; dy = y - r
+        if sel_mask is not None:
+            sx_clip0 = max(dx, 0); sy_clip0 = max(dy, 0)
+            sx_clip1 = min(dx + (sx1 - sx0), sel_mask.size[0])
+            sy_clip1 = min(dy + (sy1 - sy0), sel_mask.size[1])
+            if sx_clip1 > sx_clip0 and sy_clip1 > sy_clip0:
+                pad = Image.new("L", m.size, 0)
+                sub = sel_mask.crop((sx_clip0, sy_clip0, sx_clip1, sy_clip1))
+                pad.paste(sub, (sx_clip0 - dx, sy_clip0 - dy))
+                m = ImageChops.multiply(m, pad)
+        sample.putalpha(m)
+        layer.image.alpha_composite(sample, dest=(dx, dy))
+        self._last_pt = (x, y)
+
+
+class CloneStampTool(Tool):
+    """Alt-click sets a source point; subsequent drags stamp the source pixels
+    offset by where the user clicked."""
+    name = "Clone Stamp"
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._source: Optional[tuple[int, int]] = None
+        self._delta: Optional[tuple[int, int]] = None
+        self._last_pt: Optional[tuple[int, int]] = None
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        if self.ctx.alt_held:
+            self._source = (x, y)
+            return
+        if self._source is None:
+            return
+        self._delta = (self._source[0] - x, self._source[1] - y)
+        self._last_pt = (x, y)
+        self._stamp(layer, x, y)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._source is None or self._delta is None or self._last_pt is None:
+            return
+        spacing = max(1.0, self.ctx.brush_size * self.ctx.brush_spacing)
+        for px, py in _walk(self._last_pt, (x, y), spacing):
+            self._stamp(layer, px, py)
+        self._last_pt = (x, y)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        self._last_pt = None
+        super().release(layer, x, y)
+
+    def _stamp(self, layer: Layer, x: int, y: int) -> None:
+        if self._delta is None:
+            return
+        dx, dy = self._delta
+        size = self.ctx.brush_size
+        r = size // 2
+        sx, sy = x + dx, y + dy
+        sx0 = max(sx - r, 0); sy0 = max(sy - r, 0)
+        sx1 = min(sx - r + size, layer.image.width)
+        sy1 = min(sy - r + size, layer.image.height)
+        if sx1 <= sx0 or sy1 <= sy0:
+            return
+        sample = layer.image.crop((sx0, sy0, sx1, sy1))
+        # Build matching mask trimmed to sample bounds.
+        mw, mh = sx1 - sx0, sy1 - sy0
+        mask = _brush_mask(size, self.ctx.brush_hardness)
+        mx0 = sx0 - (sx - r); my0 = sy0 - (sy - r)
+        sub_mask = mask.crop((mx0, my0, mx0 + mw, my0 + mh))
+        sub_mask = sub_mask.point(lambda v: int(v * self.ctx.brush_opacity))
+        sel_mask = _selection_at_layer(self.ctx, layer)
+        if sel_mask is not None:
+            tgt_x = x - r + (sx0 - (sx - r))
+            tgt_y = y - r + (sy0 - (sy - r))
+            tgt_x0 = max(tgt_x, 0); tgt_y0 = max(tgt_y, 0)
+            tgt_x1 = min(tgt_x + mw, sel_mask.size[0])
+            tgt_y1 = min(tgt_y + mh, sel_mask.size[1])
+            pad = Image.new("L", (mw, mh), 0)
+            if tgt_x1 > tgt_x0 and tgt_y1 > tgt_y0:
+                sub = sel_mask.crop((tgt_x0, tgt_y0, tgt_x1, tgt_y1))
+                pad.paste(sub, (tgt_x0 - tgt_x, tgt_y0 - tgt_y))
+            sub_mask = ImageChops.multiply(sub_mask, pad)
+        sample.putalpha(sub_mask)
+        target_x = x - r + (sx0 - (sx - r))
+        target_y = y - r + (sy0 - (sy - r))
+        layer.image.alpha_composite(sample, dest=(target_x, target_y))
+
+
 def build_default_tools(ctx: ToolContext) -> dict[str, Tool]:
     return {
         "Brush": BrushTool(ctx),
         "Eraser": EraserTool(ctx),
         "Move": MoveTool(ctx),
         "Transform": TransformTool(ctx),
+        "Marquee": MarqueeTool(ctx),
+        "Lasso": LassoTool(ctx),
+        "Magic Wand": MagicWandTool(ctx),
         "Fill": FillTool(ctx),
+        "Gradient": GradientTool(ctx),
+        "Text": TextTool(ctx),
         "Line": LineTool(ctx),
         "Rectangle": RectTool(ctx),
         "Ellipse": EllipseTool(ctx),
+        "Blur": BlurTool(ctx),
+        "Sharpen": SharpenTool(ctx),
+        "Smudge": SmudgeTool(ctx),
+        "Clone Stamp": CloneStampTool(ctx),
         "Picker": PickerTool(ctx),
     }

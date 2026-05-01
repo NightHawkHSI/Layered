@@ -1,34 +1,43 @@
-from PIL import Image, ImageFilter, ImageChops
-from app.plugin_api import Plugin, PluginContext
+"""Glow / bloom filter."""
+from PIL import Image, ImageChops, ImageFilter
+
+from app.plugin_api import Plugin, PluginContext, Setting
+
 
 class GlowFilterPlugin(Plugin):
     name = "Glow Filter"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_filter("Glow / Bloom", self.apply)
-        ctx.logger.info("Glow Filter registered successfully")
+        ctx.register_filter(
+            "Glow / Bloom",
+            self.apply,
+            settings=[
+                Setting(name="radius", type="int", default=8, min=1, max=128, step=1, label="Radius"),
+                Setting(name="intensity", type="float", default=1.0, min=0.0, max=4.0, step=0.1, label="Intensity"),
+                Setting(name="mode", type="choice", default="screen",
+                        choices=["screen", "add", "lighten"], label="Blend mode"),
+            ],
+        )
+        ctx.logger.info("Glow Filter registered")
 
-    def apply(self, image: Image.Image) -> Image.Image:
-        try:
-            self.ctx.logger.info("Applying Glow filter")
-
-            # Ensure RGBA
-            base = image.convert("RGBA")
-
-            # Create blurred version (the glow)
-            glow = base.filter(ImageFilter.GaussianBlur(radius=8))
-
-            # Boost brightness slightly
-            glow = ImageChops.add(glow, glow)
-
-            # Blend original + glow
+    def apply(self, image: Image.Image, *,
+              radius: int = 8, intensity: float = 1.0, mode: str = "screen") -> Image.Image:
+        base = image.convert("RGBA")
+        glow = base.filter(ImageFilter.GaussianBlur(radius=max(1, int(radius))))
+        if intensity != 1.0:
+            r, g, b, a = glow.split()
+            r = r.point(lambda v: min(255, int(v * intensity)))
+            g = g.point(lambda v: min(255, int(v * intensity)))
+            b = b.point(lambda v: min(255, int(v * intensity)))
+            glow = Image.merge("RGBA", (r, g, b, a))
+        if mode == "add":
+            result = ImageChops.add(base, glow)
+        elif mode == "lighten":
+            result = ImageChops.lighter(base, glow)
+        else:
             result = ImageChops.screen(base, glow)
-
-            self.ctx.logger.info("Glow filter applied successfully")
-            return result
-
-        except Exception as e:
-            self.ctx.logger.error(f"Glow filter failed: {e}")
-            raise
+        # Preserve original alpha so glow stays inside opaque pixels.
+        result.putalpha(base.split()[3])
+        return result
