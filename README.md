@@ -1,17 +1,38 @@
 <div align="center">
 <img src="https://img.shields.io/badge/Layered-Image%20Editor-blue?style=for-the-badge&logo=layers&logoColor=white" alt="Layered">
 <br/><br/>
+
 A Python-based image and asset editor — real-time canvas, non-destructive layers, plugin-driven.
 <br/>
+
 <a href="https://github.com/NightHawkHSI/Layered/releases/latest">
   <img src="https://img.shields.io/badge/⬇ Download-Latest%20Release-2ea44f?style=for-the-badge" alt="Download">
 </a>
+
 <br/><br/>
+
+<!-- Core Stats -->
 <img src="https://img.shields.io/github/downloads/NightHawkHSI/Layered/total?style=flat-square&label=Downloads&color=blue">
 <img src="https://img.shields.io/github/stars/NightHawkHSI/Layered?style=flat-square&label=Stars&color=yellow">
 <img src="https://img.shields.io/github/forks/NightHawkHSI/Layered?style=flat-square&label=Forks&color=orange">
 <img src="https://img.shields.io/github/issues/NightHawkHSI/Layered?style=flat-square&label=Issues&color=red">
 <img src="https://img.shields.io/github/license/NightHawkHSI/Layered?style=flat-square&label=License&color=green">
+
+<br/>
+
+<!-- Extra Stats -->
+<img src="https://img.shields.io/github/last-commit/NightHawkHSI/Layered?style=flat-square&label=Last%20Commit&color=purple">
+<img src="https://img.shields.io/github/repo-size/NightHawkHSI/Layered?style=flat-square&label=Repo%20Size&color=blueviolet">
+<img src="https://img.shields.io/github/languages/top/NightHawkHSI/Layered?style=flat-square&label=Top%20Language&color=informational">
+<img src="https://img.shields.io/github/commit-activity/m/NightHawkHSI/Layered?style=flat-square&label=Commits%2FMonth&color=ff69b4">
+
+<br/>
+
+<!-- Views Counter (Approximate) -->
+<img src="https://komarev.com/ghpvc/?username=NightHawkHSI&repo=Layered&style=flat-square&label=Views&color=brightgreen">
+
+<br/>
+
 <img src="https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square&logo=python&logoColor=white">
 </div>
 
