@@ -719,13 +719,10 @@ class TransformTool(Tool):
         nw = max(1, nx1 - nx0)
         nh = max(1, ny1 - ny0)
         resized = self._cropped.resize((nw, nh), Image.Resampling.LANCZOS)
-        canvas_w, canvas_h = layer.image.size
-        new_img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
-        ox, oy = layer.offset
-        paste_x = nx0 - ox
-        paste_y = ny0 - oy
-        new_img.paste(resized, (paste_x, paste_y), resized)
+        new_img = Image.new("RGBA", (nw, nh), (0, 0, 0, 0))
+        new_img.paste(resized, (0, 0), resized)
         layer.image = new_img
+        layer.offset = (nx0, ny0)
         self._cur_bbox = new_bbox
 
     def paint_overlay(self, painter, canvas) -> None:
@@ -763,8 +760,25 @@ class TransformTool(Tool):
 
 
 class _SelectionToolBase(Tool):
-    """Shared helpers for marquee / lasso / magic-wand."""
+    """Shared helpers for marquee / lasso / magic-wand.
+
+    Also implements drag-to-move: pressing inside an existing selection
+    grabs the mask and shifts it as the cursor drags, so users can
+    reposition a selection without redrawing it.
+    """
     commit_on = None  # selection isn't a layer-image change; no history snap
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._move_mode: bool = False
+        self._move_anchor: Optional[tuple[int, int]] = None
+        self._move_start_mask: Optional[Image.Image] = None
+        # Float-selection state: pixels are lifted from the active layer
+        # at press time, follow the cursor as a floating buffer, then
+        # land at the drop position on release.
+        self._lift_base: Optional[Image.Image] = None     # layer pixels with selection erased
+        self._lift_image: Optional[Image.Image] = None    # selection pixels in layer space
+        self._lift_layer: Optional[Layer] = None
 
     def _commit_mask(self, mask: Image.Image) -> None:
         if self.ctx.set_selection is None:
@@ -773,21 +787,132 @@ class _SelectionToolBase(Tool):
         sel = Selection.from_mask(mask)
         self.ctx.set_selection(sel)
 
+    # --- drag-to-move shared logic ---
+
+    def _begin_move_if_inside(self, layer: Layer, x: int, y: int) -> bool:
+        """If (x, y) lands on the current selection mask, lift the pixels
+        under that mask off the active layer and enter drag-move mode.
+        The selection (and its pixels) then follow the cursor until
+        release. Returns True iff drag-move started."""
+        if self.ctx.get_selection is None:
+            return False
+        sel = self.ctx.get_selection()
+        if sel is None or getattr(sel, "mask", None) is None:
+            return False
+        mask: Image.Image = sel.mask
+        mw, mh = mask.size
+        if not (0 <= x < mw and 0 <= y < mh):
+            return False
+        if mask.getpixel((x, y)) <= 0:
+            return False
+
+        # Translate canvas-space mask into layer-image space.
+        ox, oy = layer.offset
+        lw, lh = layer.image.size
+        layer_mask = Image.new("L", (lw, lh), 0)
+        layer_mask.paste(mask, (-ox, -oy))
+
+        # Lifted pixels: copy of the layer with alpha multiplied by the
+        # layer-space mask so only the selected region survives.
+        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+        lr, lg, lb, la = src.split()
+        lifted_alpha = ImageChops.multiply(la, layer_mask)
+        lifted = Image.merge("RGBA", (lr, lg, lb, lifted_alpha))
+
+        # Base layer: same pixels but with the selected region erased
+        # (alpha multiplied by the inverted mask).
+        keep = layer_mask.point(lambda v: 255 - v)
+        base_alpha = ImageChops.multiply(la, keep)
+        base = Image.merge("RGBA", (lr, lg, lb, base_alpha))
+
+        layer.image = base.copy()
+
+        self._move_mode = True
+        self._move_anchor = (x, y)
+        self._move_start_mask = mask.copy()
+        self._lift_base = base
+        self._lift_image = lifted
+        self._lift_layer = layer
+        return True
+
+    def _continue_move(self, x: int, y: int) -> None:
+        if (not self._move_mode or self._move_start_mask is None
+                or self._move_anchor is None
+                or self._lift_base is None or self._lift_image is None
+                or self._lift_layer is None
+                or self.ctx.set_selection is None):
+            return
+        ax, ay = self._move_anchor
+        dx, dy = int(x - ax), int(y - ay)
+
+        # Repaint the active layer: start from the erased base, paste
+        # the lifted pixels shifted by (dx, dy). Tool x,y are canvas
+        # coordinates; layer.offset is constant during a drag so the
+        # delta applies directly in layer-image space.
+        layer = self._lift_layer
+        canvas_layer = self._lift_base.copy()
+        lifted_shifted = Image.new("RGBA", canvas_layer.size, (0, 0, 0, 0))
+        lifted_shifted.paste(self._lift_image, (dx, dy))
+        canvas_layer.alpha_composite(lifted_shifted)
+        layer.image = canvas_layer
+
+        # Move the selection mask by the same canvas-space delta.
+        mw, mh = self._move_start_mask.size
+        shifted_mask = Image.new("L", (mw, mh), 0)
+        shifted_mask.paste(self._move_start_mask, (dx, dy))
+        from .project import Selection
+        bb = shifted_mask.getbbox()
+        if bb is None:
+            self.ctx.set_selection(None)
+        else:
+            self.ctx.set_selection(Selection(bbox=bb, mask=shifted_mask))
+
+    def _end_move(self) -> bool:
+        if not self._move_mode:
+            return False
+        # Final layer state already reflects the moved pixels from the
+        # last _continue_move call. Snapshot history so the move is
+        # undoable as a single discrete action.
+        ca = getattr(self.ctx, "commit_action", None)
+        if ca is not None:
+            try:
+                ca("Move selection")
+            except Exception:
+                pass
+        self._move_mode = False
+        self._move_anchor = None
+        self._move_start_mask = None
+        self._lift_base = None
+        self._lift_image = None
+        self._lift_layer = None
+        return True
+
 
 class MarqueeTool(_SelectionToolBase):
-    """Drag a rectangular selection."""
+    """Drag a rectangular selection. Click inside an existing selection
+    to drag-move it instead of starting a new one."""
     name = "Marquee"
 
     def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._begin_move_if_inside(layer, x, y):
+            self._origin = None
+            self._cur = None
+            return
         self._origin = (x, y)
         self._cur = (x, y)
 
     def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._move_mode:
+            self._continue_move(x, y)
+            return
         if getattr(self, "_origin", None) is None:
             return
         self._cur = (x, y)
 
     def release(self, layer: Layer, x: int, y: int) -> None:
+        if self._end_move():
+            super().release(layer, x, y)
+            return
         if getattr(self, "_origin", None) is None:
             return
         ox, oy = self._origin
@@ -825,13 +950,20 @@ class MarqueeTool(_SelectionToolBase):
 
 
 class LassoTool(_SelectionToolBase):
-    """Freehand polygon selection."""
+    """Freehand polygon selection. Click inside an existing selection
+    to drag-move it instead of starting a new lasso."""
     name = "Lasso"
 
     def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._begin_move_if_inside(layer, x, y):
+            self._points = None
+            return
         self._points: list[tuple[int, int]] = [(x, y)]
 
     def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._move_mode:
+            self._continue_move(x, y)
+            return
         pts = getattr(self, "_points", None)
         if pts is None:
             return
@@ -839,16 +971,26 @@ class LassoTool(_SelectionToolBase):
             pts.append((x, y))
 
     def release(self, layer: Layer, x: int, y: int) -> None:
+        if self._end_move():
+            super().release(layer, x, y)
+            return
         pts = getattr(self, "_points", None)
         if pts is None or len(pts) < 3:
             self._points = None
+            super().release(layer, x, y)
             return
         cw, ch = layer.image.size
         ox, oy = layer.offset
         canvas_w = cw + ox
         canvas_h = ch + oy
         mask = Image.new("L", (canvas_w, canvas_h), 0)
-        ImageDraw.Draw(mask).polygon([(px + ox, py + oy) for px, py in pts], fill=255)
+        # Close the polygon so the fill always covers the interior, then
+        # paint both the interior (fill) and the boundary (outline) so a
+        # one-pixel-wide ring on the lasso path can never leak unselected.
+        poly = [(int(px + ox), int(py + oy)) for px, py in pts]
+        if poly[0] != poly[-1]:
+            poly.append(poly[0])
+        ImageDraw.Draw(mask).polygon(poly, fill=255, outline=255)
         self._commit_mask(mask)
         self._points = None
         super().release(layer, x, y)
@@ -879,11 +1021,15 @@ def Qt_NoBrush():
 
 
 class MagicWandTool(_SelectionToolBase):
-    """Click to select all contiguous pixels within tolerance of clicked color."""
+    """Click empty space to select all contiguous pixels within tolerance
+    of the clicked color. Click inside an existing selection to drag-move
+    it (lifting the pixels with the mask)."""
     name = "Magic Wand"
     commit_on = None
 
     def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._begin_move_if_inside(layer, x, y):
+            return
         if not (0 <= x < layer.image.width and 0 <= y < layer.image.height):
             return
         arr = np.asarray(layer.image.convert("RGBA"), dtype=np.int16)
@@ -908,6 +1054,14 @@ class MagicWandTool(_SelectionToolBase):
         layer_mask = Image.fromarray((visited * 255).astype(np.uint8), mode="L")
         canvas_mask.paste(layer_mask, (ox, oy))
         self._commit_mask(canvas_mask)
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._move_mode:
+            self._continue_move(x, y)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        self._end_move()
+        super().release(layer, x, y)
 
 
 class GradientTool(Tool):

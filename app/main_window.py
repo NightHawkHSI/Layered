@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Optional
 
 from PIL import Image
-from PyQt6.QtCore import QSettings, Qt
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from PyQt6.QtCore import QBuffer, QIODevice, QSettings, Qt
+from PyQt6.QtGui import QAction, QIcon, QImage, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -37,6 +38,7 @@ from .layer import Layer, LayerStack
 from .logger import get_logger
 from .plugin_loader import ActionEntry, FilterEntry, PluginRegistry, load_plugins, shutdown_plugins
 from .project import Project
+from .session import load_session, save_session
 from .tools import ToolContext, build_default_tools
 from .ui.color_panel import ColorPanel
 from .ui.console import LogConsole
@@ -57,6 +59,7 @@ else:
     PROJECT_DIR = Path(__file__).resolve().parent.parent
     RESOURCE_DIR = PROJECT_DIR
 PLUGINS_DIR = PROJECT_DIR / "Plugins"
+SESSION_DIR = PROJECT_DIR / "session"
 ICON_PATH = RESOURCE_DIR / "Icon.ico"
 if not ICON_PATH.exists():
     ICON_PATH = PROJECT_DIR / "Icon.ico"
@@ -102,7 +105,12 @@ class MainWindow(QMainWindow):
         elif ICON_PNG_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
-        self.projects: list[Project] = [Project.blank(width, height)]
+        restored = load_session(SESSION_DIR)
+        if restored:
+            self.projects: list[Project] = restored
+            self.log.info("Restored %d project(s) from session", len(restored))
+        else:
+            self.projects = [Project.blank(width, height)]
         self.active_project: int = 0
         self._last_export_dir: Optional[Path] = None
         self._last_open_dir: Optional[Path] = None
@@ -170,32 +178,30 @@ class MainWindow(QMainWindow):
         # Stack History under Layers vertically so both fit at once.
         self.splitDockWidget(self._docks["Layers"], history_dock, Qt.Orientation.Vertical)
 
-        self.tool_panel = ToolPanel(self.tool_ctx, self.tools, layout="toolbar")
+        self.tool_panel = ToolPanel(self.tool_ctx, self.tools, layout="tools_dock")
         self.tool_panel.tool_selected.connect(self._on_tool_selected)
-        self._tool_bar = QToolBar("Tools", self)
-        self._tool_bar.setObjectName("toolbar.tools")
-        self._tool_bar.setMovable(True)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_bar)
-        self.tool_panel.populate_toolbar(self._tool_bar)
+        self._add_dock("Tools", self.tool_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
 
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         self._tool_settings_bar = QToolBar("Tool settings", self)
         self._tool_settings_bar.setObjectName("toolbar.tool_settings")
         self._tool_settings_bar.setMovable(True)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_settings_bar)
         self.tool_panel.populate_settings_toolbar(self._tool_settings_bar)
 
-        for tb in (self._tool_bar, self._tool_settings_bar):
-            tb.topLevelChanged.connect(lambda *_: self._schedule_layout_save())
-            tb.visibilityChanged.connect(lambda *_: self._schedule_layout_save())
+        self._tool_settings_bar.topLevelChanged.connect(lambda *_: self._schedule_layout_save())
+        self._tool_settings_bar.visibilityChanged.connect(lambda *_: self._schedule_layout_save())
 
         self.color_panel = ColorPanel(self.tool_ctx)
-        self._add_dock("Colors", self.color_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
-        # Live text-edit panel.
+        colors_dock = self._add_dock("Colors", self.color_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        # Place Tools above Colors on the left so brush buttons are always visible.
+        self.splitDockWidget(self._docks["Tools"], colors_dock, Qt.Orientation.Vertical)
+        # Live text-edit panel — tab it with Colors to save space.
         self.text_panel = TextPanel(self.tool_ctx)
         self.text_panel.changed.connect(self._on_text_changed)
         self.text_panel.commit_requested.connect(self._on_text_commit)
-        self._add_dock("Text", self.text_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        text_dock = self._add_dock("Text", self.text_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.tabifyDockWidget(colors_dock, text_dock)
+        colors_dock.raise_()
         # Color changes also retrigger live text re-render.
         self.color_panel.primary_changed.connect(lambda *_: self._on_text_changed())
 
@@ -218,7 +224,7 @@ class MainWindow(QMainWindow):
         )
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
-            self.tool_panel.add_tool_button(name, toolbar=self._tool_bar)
+            self.tool_panel.add_tool_button(name)
 
         self._build_menus()
         self._refresh_tabs()
@@ -245,7 +251,6 @@ class MainWindow(QMainWindow):
         self.restoreState(self._default_state)
         for dock in self._docks.values():
             dock.show()
-        self._tool_bar.show()
         self._tool_settings_bar.show()
         self._save_layout()
 
@@ -358,12 +363,6 @@ class MainWindow(QMainWindow):
             )
             panels_menu.addAction(act)
         panels_menu.addSeparator()
-        toolbar_act = QAction("Tools bar", self)
-        toolbar_act.setCheckable(True)
-        toolbar_act.setChecked(self._tool_bar.isVisible())
-        toolbar_act.triggered.connect(lambda checked: self._tool_bar.setVisible(checked))
-        self._tool_bar.visibilityChanged.connect(toolbar_act.setChecked)
-        panels_menu.addAction(toolbar_act)
         settings_bar_act = QAction("Tool settings bar", self)
         settings_bar_act.setCheckable(True)
         settings_bar_act.setChecked(self._tool_settings_bar.isVisible())
@@ -491,6 +490,11 @@ class MainWindow(QMainWindow):
                 self.active_project -= 1
         self._bind_current()
         self._refresh_tabs()
+        # Persist removal so closed project doesn't reappear next launch.
+        try:
+            save_session(self.projects, SESSION_DIR)
+        except Exception:
+            self.log.exception("Failed to save session after close")
 
     def _save_project(self, idx: int) -> None:
         if not (0 <= idx < len(self.projects)):
@@ -627,7 +631,22 @@ class MainWindow(QMainWindow):
             self._on_action_committed(label)
 
     def _on_new(self) -> None:
-        dlg = NewCanvasDialog(self)
+        # Pre-fill canvas dims with the size of whatever is on the
+        # clipboard. Internal `_copy_buffer` (Ctrl+C of a selection on
+        # the active layer) is the most reliable source — it stores the
+        # exact cropped PIL image, no system-clipboard round trip — so
+        # we check it first. Otherwise fall back to the system clipboard
+        # via `_image_from_clipboard` (covers external screenshots /
+        # browser images).
+        default_w, default_h = 1024, 768
+        if self._copy_buffer is not None:
+            internal_img = self._copy_buffer[0]
+            default_w, default_h = internal_img.width, internal_img.height
+        else:
+            cb = self._image_from_clipboard()
+            if cb is not None:
+                default_w, default_h = cb[0].width, cb[0].height
+        dlg = NewCanvasDialog(self, w=default_w, h=default_h)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
         w, h = dlg.values()
@@ -977,8 +996,23 @@ class MainWindow(QMainWindow):
         from PIL import ImageChops
         a = tmp.crop(bb).split()[3]
         cropped.putalpha(ImageChops.multiply(a, sub_mask))
-        self._copy_buffer = (cropped, bb)
+        # Tag the buffer with the source project so a later paste can
+        # tell whether we're pasting back into the same project (keep
+        # original bbox position) or into a different one (treat like an
+        # external image paste — ask for size mode).
+        self._copy_buffer = (cropped, bb, proj)
+        self._push_image_to_clipboard(cropped)
         self.statusBar().showMessage(f"Copied {bb[2]-bb[0]}×{bb[3]-bb[1]} region")
+
+    def _push_image_to_clipboard(self, img: Image.Image) -> None:
+        cb = QApplication.clipboard()
+        if cb is None:
+            return
+        rgba = img if img.mode == "RGBA" else img.convert("RGBA")
+        data = rgba.tobytes("raw", "RGBA")
+        qimg = QImage(data, rgba.width, rgba.height, rgba.width * 4,
+                      QImage.Format.Format_RGBA8888).copy()
+        cb.setImage(qimg)
 
     def _on_cut(self) -> None:
         self._on_copy()
@@ -1002,16 +1036,173 @@ class MainWindow(QMainWindow):
         self._on_action_committed("Cut selection")
 
     def _on_paste(self) -> None:
-        if self._copy_buffer is None:
-            return
         proj = self.current()
-        img, bb = self._copy_buffer
-        canvas_layer = Image.new("RGBA", (proj.stack.width, proj.stack.height), (0, 0, 0, 0))
-        canvas_layer.paste(img, (bb[0], bb[1]), img)
-        proj.stack.add_layer(Layer(name="Pasted", image=canvas_layer))
+        if proj is None:
+            return
+
+        # Resolve the paste source. We prefer the internal `_copy_buffer`
+        # whenever it exists *and* still represents what the user last
+        # copied — i.e. the buffer's image dimensions still match what's
+        # on the system clipboard, or no other app has put an image on
+        # the clipboard since. Falling back to `cb.ownsClipboard()` alone
+        # turned out to be unreliable on Windows (showing a modal dialog
+        # such as NewCanvasDialog can briefly flip ownership), which
+        # silently routed cross-project pastes through the legacy
+        # bbox-position branch and dropped the layer outside the new
+        # canvas. Now we trust `_copy_buffer` first and only fall through
+        # to the external clipboard if the buffer is empty.
+        cb = QApplication.clipboard()
+        img: Optional[Image.Image] = None
+        bb: Optional[tuple[int, int, int, int]] = None
+        source_proj: Optional[Project] = None
+        source_label = "Pasted"
+
+        if self._copy_buffer is not None:
+            img, bb, source_proj = self._copy_buffer
+            source_label = "Pasted Selection"
+            # If another app pushed a different image since our copy,
+            # prefer that external image instead.
+            if cb is not None and not cb.ownsClipboard():
+                external = self._image_from_clipboard()
+                if external is not None:
+                    ext_img, ext_label = external
+                    if ext_img.size != img.size:
+                        img, source_label = ext_img, ext_label
+                        bb = None
+                        source_proj = None
+        else:
+            external = self._image_from_clipboard()
+            if external is not None:
+                img, source_label = external
+
+        if img is None:
+            return
+
+        # Same-project: drop the pixels back at the original bbox so a
+        # plain Ctrl+C / Ctrl+V round-trip is positionally lossless.
+        if source_proj is proj and bb is not None:
+            canvas_layer = Image.new("RGBA", (proj.stack.width, proj.stack.height), (0, 0, 0, 0))
+            canvas_layer.paste(img, (bb[0], bb[1]), img)
+            proj.stack.add_layer(Layer(name=source_label, image=canvas_layer))
+            proj.stack.invalidate_cache()
+            self.layer_panel.refresh()
+            self.canvas.refresh()
+            self._mark_dirty()
+            self._on_action_committed("Paste selection")
+            self._activate_transform_tool()
+            return
+
+        # Cross-project / external — bbox is meaningless against this
+        # canvas; ask how the image should be sized against it.
+        cw, ch = proj.stack.width, proj.stack.height
+        iw, ih = img.size
+        mode = self._ask_paste_mode((iw, ih), (cw, ch))
+        if mode is None:
+            return
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        if mode == "extend":
+            new_w, new_h = max(cw, iw), max(ch, ih)
+            resized = (new_w, new_h) != (cw, ch)
+            if resized:
+                proj.stack.resize_canvas(new_w, new_h)
+            layer_img = Image.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
+            layer_img.paste(img, (0, 0), img)
+            proj.stack.add_layer(Layer(name=source_label, image=layer_img))
+            if resized:
+                self.canvas.fit_to_window()
+            action_desc = f"Paste ({source_label}) — extend canvas to {new_w}×{new_h}"
+        elif mode == "anchor":
+            proj.stack.add_layer(Layer(name=source_label, image=img, offset=(0, 0)))
+            action_desc = f"Paste ({source_label}) — anchor full image"
+        else:  # crop
+            layer_img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            layer_img.paste(img, (0, 0), img)
+            proj.stack.add_layer(Layer(name=source_label, image=layer_img))
+            action_desc = f"Paste ({source_label}) — crop to canvas"
+        proj.stack.invalidate_cache()
+        self.layer_panel.refresh()
         self.canvas.refresh()
         self._mark_dirty()
-        self._on_action_committed("Paste")
+        self._on_action_committed(action_desc)
+        self._activate_transform_tool()
+
+    def _activate_transform_tool(self) -> None:
+        if "Transform" not in self.tools:
+            return
+        self._on_tool_selected("Transform")
+
+    def _ask_paste_mode(self, img_size: tuple[int, int],
+                        canvas_size: tuple[int, int]) -> Optional[str]:
+        iw, ih = img_size
+        cw, ch = canvas_size
+        bigger = iw > cw or ih > ch
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Paste Image")
+        box.setText(f"Pasted image: {iw} × {ih}\nCanvas: {cw} × {ch}")
+        info = "How should the image be placed?\n\n"
+        if bigger:
+            info += "• Extend Canvas — grow canvas so the full image fits.\n"
+        info += (
+            "• Anchor Full Image — keep canvas size; layer stores the full image so you "
+            "can move/resize it later without losing pixels outside the canvas.\n"
+            "• Crop to Canvas — keep canvas size; clip the image to canvas bounds (legacy)."
+        )
+        box.setInformativeText(info)
+
+        extend_btn = box.addButton("Extend Canvas", QMessageBox.ButtonRole.AcceptRole) if bigger else None
+        anchor_btn = box.addButton("Anchor Full Image", QMessageBox.ButtonRole.AcceptRole)
+        crop_btn = box.addButton("Crop to Canvas", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+
+        box.setDefaultButton(extend_btn if extend_btn is not None else anchor_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is None or clicked is cancel_btn:
+            return None
+        if clicked is extend_btn:
+            return "extend"
+        if clicked is anchor_btn:
+            return "anchor"
+        if clicked is crop_btn:
+            return "crop"
+        return None
+
+    def _image_from_clipboard(self) -> Optional[tuple[Image.Image, str]]:
+        cb = QApplication.clipboard()
+        if cb is None:
+            return None
+        md = cb.mimeData()
+        if md is None:
+            return None
+
+        if md.hasImage():
+            qimg = cb.image()
+            if not qimg.isNull():
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.ReadWrite)
+                if qimg.save(buf, "PNG"):
+                    from io import BytesIO
+                    img = Image.open(BytesIO(bytes(buf.data()))).convert("RGBA")
+                    buf.close()
+                    return img, "Pasted Image"
+                buf.close()
+
+        if md.hasUrls():
+            for url in md.urls():
+                if not url.isLocalFile():
+                    continue
+                path = url.toLocalFile()
+                try:
+                    img = Image.open(path).convert("RGBA")
+                except Exception as e:
+                    self.log.warning("Paste: could not open %s: %s", path, e)
+                    continue
+                return img, Path(path).stem or "Pasted Image"
+
+        return None
 
     def _on_about(self) -> None:
         QMessageBox.about(
@@ -1024,6 +1215,20 @@ class MainWindow(QMainWindow):
         )
 
     # --- lifecycle ---
+
+    def keyPressEvent(self, event):  # noqa: N802
+        # Swallow stray Return/Enter at the window level so it can't
+        # trigger an autoDefault QPushButton (e.g. project tabs' "+ New",
+        # the layer panel's "+ Add"), which would otherwise switch
+        # projects or add a layer and look like a deselect to the user.
+        # Text inputs (QLineEdit, QSpinBox, QPlainTextEdit, etc.) already
+        # consume the event before it bubbles up here, so this only
+        # affects the case where no editor has focus.
+        from PyQt6.QtCore import Qt as _Qt
+        if event.key() in (_Qt.Key.Key_Return, _Qt.Key.Key_Enter):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -1038,6 +1243,10 @@ class MainWindow(QMainWindow):
             self._save_layout()
         except Exception:
             self.log.exception("Failed to save layout")
+        try:
+            save_session(self.projects, SESSION_DIR)
+        except Exception:
+            self.log.exception("Failed to save session")
         try:
             shutdown_plugins(self.plugins)
         finally:

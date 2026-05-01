@@ -27,7 +27,7 @@ class _ProjectTab(QWidget):
         self.select_btn = QPushButton(label)
         self.select_btn.setCheckable(True)
         self.select_btn.setChecked(active)
-        self.select_btn.setMinimumWidth(140)
+        self.select_btn.setMinimumWidth(60)
         self.select_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.select_btn.setStyleSheet("text-align: left; padding: 4px 8px;")
         if thumbnail is not None and not thumbnail.isNull():
@@ -61,6 +61,7 @@ class ProjectTabs(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
         self._row_widget = QWidget()
         self._row = QVBoxLayout(self._row_widget)
         self._row.setContentsMargins(4, 4, 4, 4)

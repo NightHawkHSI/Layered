@@ -26,9 +26,11 @@ class LogConsole(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setMaximumBlockCount(5000)
+        self.text.setMinimumSize(0, 0)
 
         self.save_btn = QPushButton("Save…")
         self.clear_btn = QPushButton("Clear")

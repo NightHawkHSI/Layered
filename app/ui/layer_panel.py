@@ -53,8 +53,10 @@ class LayerPanel(QWidget):
 
         self.list = QListWidget()
         self.list.setIconSize(QSize(40, 40))
-        self.list.setMinimumHeight(220)
+        self.list.setMinimumHeight(60)
+        self.list.setMinimumWidth(0)
         self.list.setUniformItemSizes(True)
+        self.setMinimumSize(0, 0)
         self.list.currentRowChanged.connect(self._on_row_changed)
         self.list.itemChanged.connect(self._on_item_changed)
 

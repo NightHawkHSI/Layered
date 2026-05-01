@@ -47,6 +47,9 @@ def main() -> int:
     log.info("Layered starting up")
 
     app = QApplication(sys.argv)
+    # Fusion gives consistent, crisp dock drop indicators across platforms
+    # so dragging a panel shows VSCode-style snap zones reliably.
+    app.setStyle("Fusion")
     app.setApplicationName("Layered")
     app.setOrganizationName("Layered")
     if ICON_PATH.exists():

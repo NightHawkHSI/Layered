@@ -27,8 +27,10 @@ class HistoryPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
 
         self.list = QListWidget()
+        self.list.setMinimumSize(0, 0)
         self.list.itemClicked.connect(self._on_item_clicked)
 
         self.undo_btn = QPushButton("Undo")

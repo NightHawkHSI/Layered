@@ -23,10 +23,12 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QColorDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -69,7 +71,7 @@ class ColorWheel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setMinimumSize(160, 160)
+        self.setMinimumSize(60, 60)
         self._value: float = 1.0  # 0..1
         self._cache: Optional[QImage] = None
         self._cache_for: tuple[int, float] = (0, -1.0)
@@ -192,6 +194,7 @@ class ColorPanel(QWidget):
 
     def __init__(self, ctx: ToolContext, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
         self.ctx = ctx
 
         self.primary_btn = QPushButton()
@@ -214,7 +217,14 @@ class ColorPanel(QWidget):
         self.value_slider.setValue(100)
         self.value_slider.valueChanged.connect(lambda v: self.wheel.set_value(v / 100.0))
 
-        layout = QVBoxLayout(self)
+        # All controls live in an inner widget so a QScrollArea can host
+        # them — when the dock is shorter than the natural content height,
+        # the panel scrolls instead of letting the quick-color swatches
+        # overflow into the dock below.
+        inner = QWidget()
+        inner.setMinimumSize(0, 0)
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(QLabel("Colors  (LMB=primary, RMB=secondary)"))
         row = QHBoxLayout()
         row.addWidget(self.primary_btn)
@@ -240,6 +250,16 @@ class ColorPanel(QWidget):
             grid.addWidget(sw, i // cols, i % cols)
         layout.addWidget(grid_host)
         layout.addStretch(1)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
     # --- public API ---
 

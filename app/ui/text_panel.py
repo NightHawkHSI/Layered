@@ -30,6 +30,7 @@ class TextPanel(QWidget):
 
     def __init__(self, ctx: ToolContext, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
         self.ctx = ctx
 
         self.text_edit = QLineEdit(ctx.text or "Text")

@@ -75,6 +75,8 @@ class ToolPanel(QWidget):
 
         if layout == "toolbar":
             self._build_toolbar(tools)
+        elif layout == "tools_dock":
+            self._build_tools_grid(tools)
         else:
             self._build_panel(tools)
 
@@ -119,6 +121,25 @@ class ToolPanel(QWidget):
         layout.addWidget(group)
         layout.addStretch(1)
 
+    # --- tools-only dock grid (no inline brush settings — settings go on a top toolbar) -----
+
+    def _build_tools_grid(self, tools: dict[str, Tool]) -> None:
+        self.setMinimumSize(0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(2, 2, 2, 2)
+        outer.setSpacing(2)
+        self._grid_host = QWidget()
+        self._grid = QGridLayout(self._grid_host)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(2)
+        outer.addWidget(self._grid_host)
+        for name in tools.keys():
+            self._add_button(name)
+        if tools:
+            self._buttons[next(iter(tools))].setChecked(True)
+            self._active_tool_name = next(iter(tools))
+        outer.addStretch(1)
+
     # --- toolbar layout -----------------------------------------------------
 
     def _build_toolbar(self, tools: dict[str, Tool]) -> None:
@@ -140,7 +161,7 @@ class ToolPanel(QWidget):
 
     def populate_settings_toolbar(self, toolbar) -> None:
         """Row 2: brush settings, shown/hidden per active tool."""
-        if self._layout_mode != "toolbar":
+        if self._layout_mode not in ("toolbar", "tools_dock"):
             return
         from PyQt6.QtWidgets import QCheckBox
 
@@ -217,7 +238,7 @@ class ToolPanel(QWidget):
         so swapping tools doesn't reflow the toolbar — unused settings are
         kept visible but disabled, signalling they exist for other tools."""
         self._active_tool_name = name
-        if self._layout_mode != "toolbar" or not self._setting_actions:
+        if not self._setting_actions:
             return
         wanted = set(TOOL_SETTINGS.get(name, []))
         for key, actions in self._setting_actions.items():

@@ -1,5 +1,162 @@
 # Changelog
 
+## 2026-05-01 (round 19)
+
+### Fixed
+- **Enter no longer drops the active selection.** With no text editor
+  focused, pressing Return/Enter would activate whichever `QPushButton`
+  Qt had marked autoDefault — typically the project tabs' "+ New" or
+  the layer panel's "+ Add" — and the resulting project switch / layer
+  insertion looked like a deselect. `MainWindow.keyPressEvent` now
+  swallows stray Return / Enter at the window level. Text inputs
+  (`QLineEdit`, `QSpinBox`, `QPlainTextEdit`, …) consume the key event
+  before it bubbles up, so typing into a panel still works.
+
+## 2026-05-01 (round 18)
+
+### Fixed
+- **Cross-project paste actually drops the pixels now.** Round 17's
+  cross-project branch was guarded by `cb.ownsClipboard()`, which is
+  unreliable on Windows — a modal dialog such as `NewCanvasDialog` can
+  briefly flip clipboard ownership. When that happened, paste fell
+  through to the legacy bottom branch which placed the layer at the
+  *source* project's bbox coordinates (often outside the new tiny
+  canvas), so the user saw an empty paste even though the new canvas
+  was sized correctly. `_on_paste` is now restructured: it picks the
+  source up front (prefers `_copy_buffer`, falls back to the external
+  clipboard, and prefers the external one only when its dimensions
+  differ from the buffer — i.e. another app overwrote the clipboard),
+  then runs a single same-project / cross-project branch. No more
+  fall-through to a stale code path.
+
+## 2026-05-01 (round 17)
+
+### Added
+- **Cross-project paste.** Copying a selection in project A and pasting
+  it in project B (or in a brand-new canvas created with `File → New`)
+  now works. `_on_copy` tags `_copy_buffer` with the source `Project`
+  reference, and `_on_paste` branches on it: same-project pastes still
+  drop the pixels back at the original bbox position, while
+  cross-project pastes go through `_ask_paste_mode` (the same
+  Extend / Anchor / Crop dialog used for external clipboard images) so
+  the pasted layer is sized sensibly against the destination canvas.
+  Was previously broken because the paste used the source project's
+  bbox coordinates verbatim, often dropping the layer outside the new
+  canvas's bounds.
+
+## 2026-05-01 (round 16)
+
+### Fixed
+- **New-canvas dims now match the size of an internal copy.** Round 15
+  read only the system clipboard, which on Windows can pad / reformat
+  images set via `QClipboard.setImage` and so didn't always reflect the
+  exact bbox of an in-app `Ctrl+C`. `_on_new` now checks `_copy_buffer`
+  first — the PIL image cached by `_on_copy` is the authoritative
+  cropped selection — and only falls back to `_image_from_clipboard`
+  when nothing was copied internally. The width / height spin boxes now
+  reliably show the size of the copied selection.
+
+## 2026-05-01 (round 15)
+
+### Added
+- **New canvas defaults to clipboard image size.** `MainWindow._on_new`
+  inspects the clipboard via the existing `_image_from_clipboard`
+  helper; if an image is present, the `NewCanvasDialog` is opened with
+  its width / height pre-filled to the clipboard image's dimensions
+  instead of the static 1024 × 768. Spin boxes still let the user
+  override before accepting.
+
+## 2026-05-01 (round 14)
+
+### Changed
+- **Selection drag now lifts the pixels, not just the marching ants.**
+  Round 13 moved the selection mask but left the pixels behind, so
+  Lasso / Marquee / Magic Wand selections only repositioned the outline.
+  `_SelectionToolBase._begin_move_if_inside` now also:
+  1. Translates the canvas-space selection mask into layer-image space
+     via `paste(mask, (-ox, -oy))`.
+  2. Splits the active layer's RGBA, multiplies the alpha with the
+     layer-space mask to produce a *lifted* image (selected pixels
+     only) and with the inverted mask to produce a *base* image (layer
+     with the selection erased).
+  3. Replaces `layer.image` with the base, so the original location
+     becomes transparent immediately on press.
+  `_continue_move` then re-pastes the lifted image onto the base at
+  `(dx, dy)` each frame and shifts the mask by the same delta.
+  `_end_move` calls `ctx.commit_action("Move selection")` so the lift +
+  drop is one undoable action. Magic Wand was extended with `move` /
+  `release` handlers so it benefits from the same drag-move (its
+  click-to-select behaviour is unchanged when the press lands outside
+  the current selection).
+
+## 2026-05-01 (round 13)
+
+### Added
+- **Drag a selection to reposition it.** `_SelectionToolBase` gained
+  `_begin_move_if_inside` / `_continue_move` / `_end_move`. When the
+  Marquee or Lasso tool is active and the user presses *inside* the
+  current selection mask, the press starts a drag-move instead of a new
+  selection — the original mask is shifted by the cursor delta on each
+  move and re-committed (with a fresh bbox via `getbbox()`) so the
+  marching ants follow the cursor. Releasing keeps the moved selection;
+  pressing outside the mask still starts a new selection.
+
+### Fixed
+- **Lasso now selects the polygon interior, not just the line.**
+  `LassoTool.release` explicitly closes the point list (appends the
+  first point if the user did not return to it) and draws the polygon
+  with both `fill=255` *and* `outline=255` so the resulting `L`-mode
+  mask always covers the enclosed area plus its boundary. Paint tools
+  clipped through `_apply_selection_to_stamp` consequently affect the
+  whole interior.
+
+## 2026-05-01 (round 12)
+
+### Fixed
+- **Quick-color swatches no longer overflow into adjacent docks.**
+  `ColorPanel` now hosts its content in a `QScrollArea` (frameless,
+  resize-aware), so when the dock is shorter than the natural content
+  height the panel scrolls instead of letting the bottom row of quick
+  colors paint past the panel boundary onto the dock below.
+
+### Changed
+- **VSCode-style dock drop indicators.** `QApplication.setStyle("Fusion")`
+  in `main.py` ensures Qt's native dock drop zones (split top/bottom/
+  left/right per dock + tabify center) render consistently across
+  platforms and themes. Combined with the existing
+  `AnimatedDocks | AllowNestedDocks | AllowTabbedDocks | GroupedDragging`
+  options and `setDockNestingEnabled(True)`, dragging a panel now shows
+  the same four-arrow-plus-center snap overlay as VSCode.
+
+## 2026-05-01 (round 11)
+
+### Added
+- **Session restore.** Open projects persist across runs. New
+  `app/session.py` writes each project to `session/proj_NNN/` on close
+  (one PNG per layer plus `meta.json` with name/path/dimensions/active
+  index/dirty flag and per-layer name, visible, opacity, blend_mode,
+  offset, locked, group). On launch, `MainWindow` calls `load_session`
+  before falling back to `Project.blank`. Explicit `Close Project` (and
+  `Ctrl+W`) re-saves the session so closed projects do not reappear.
+  History, selections, and clipboard remain ephemeral.
+- **Tools dock.** New `tools_dock` layout in `ToolPanel` builds a
+  2-column compact grid of tool buttons inside a left `QDockWidget`, so
+  every brush/tool button is visible at once instead of clipping behind
+  the toolbar overflow chevron. Settings strip stays on the top
+  `Tool settings` toolbar. Tools dock is split above Colors on the left;
+  Text dock tabified with Colors. Old `Tools` `QToolBar` removed and the
+  `View → Panels → Tools bar` toggle replaced by the standard `Tools`
+  dock toggle.
+
+### Fixed
+- **Panels can shrink, not just grow.** Hard minimum sizes that locked
+  docks at large widths/heights were relaxed: `LayerPanel` list min
+  height 220 → 60 (and `setMinimumSize(0, 0)` on the panel itself),
+  `ColorWheel` min size 160×160 → 60×60, `ProjectTabs` select button min
+  width 140 → 60, and `setMinimumSize(0, 0)` on `TextPanel`,
+  `HistoryPanel`, `LogConsole`, and `ProjectTabs`. Docks now drag to
+  small widths/heights without snapping back to a floor.
+
 ## 2026-05-01 (round 10)
 
 ### Added
