@@ -1,0 +1,36 @@
+This project is a fully-featured Python-based image and asset editor inspired by the usability and creative flexibility of Paint.NET, 
+designed to allow users to paint, 
+edit, 
+and construct layered assets from scratch with a smooth and responsive workflow.
+The application includes a complete drawing toolkit—brushes,
+erasers,
+shapes,
+fill tools,
+and color controls—alongside a real-time canvas and a robust layer system supporting blending modes, opacity,
+grouping, and transformations.
+A key feature is its advanced export system,
+allowing users to save both the final composited image and automatically export each individual layer as separate image files with preserved transparency and positioning,
+making it ideal for game development and modular asset pipelines.
+The application also includes a dedicated Plugins folder that supports dynamically loaded Python-based extensions,
+enabling users and developers to add custom tools,
+effects,
+filters,
+and automation features.
+To support this ecosystem,
+the project includes a clearly defined plugin API file and documentation that outlines how plugins register,
+interact with the canvas and layers,
+and extend the UI.
+In addition,
+the application implements a comprehensive logging and error reporting system, generating detailed log files that track user actions,
+system events,
+and plugin activity in real time, while also capturing crashes and exceptions into structured error reports with timestamps and stack traces.
+A plugin-safe logging layer ensures that all plugin activity is sandboxed and monitored,
+so if a plugin fails or throws an error, it is isolated without crashing the main application,
+while still recording detailed diagnostics for debugging.
+These logs are saved locally and can be optionally surfaced through an in-app console or exported for review,
+giving both developers and users clear visibility into issues,
+plugin behavior,
+and performance bottlenecks. 
+The goal is to combine a familiar creative experience with a powerful, 
+extensible backend and transparent diagnostics, 
+turning the editor into a scalable and reliable platform for both artists and developers.
