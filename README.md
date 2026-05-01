@@ -40,6 +40,7 @@
 <img src="https://img.shields.io/github/issues/NightHawkHSI/Layered?style=flat-square&label=Issues&color=red">
 <img src="https://img.shields.io/github/last-commit/NightHawkHSI/Layered?style=flat-square&label=Last%20Commit">
 <img src="https://img.shields.io/github/repo-size/NightHawkHSI/Layered?style=flat-square&label=Repo%20Size">
+<img src="https://komarev.com/ghpvc/?username=NightHawkHSI&repo=Layered&style=flat-square&label=Views&color=brightgreen">
 </p>
 
 </div>
