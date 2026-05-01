@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PIL.ImageQt import ImageQt
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +24,24 @@ from ..blending import BLEND_MODES
 from ..layer import LayerStack
 
 
+def _layer_thumbnail(image, size: int) -> QPixmap:
+    """Build a QPixmap thumbnail from a Pillow image, max edge = size."""
+    if image is None:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        return pm
+    w, h = image.size
+    if w == 0 or h == 0:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        return pm
+    scale = min(size / w, size / h)
+    tw, th = max(1, int(w * scale)), max(1, int(h * scale))
+    thumb = image.resize((tw, th))
+    qimg = QImage(ImageQt(thumb).copy())
+    return QPixmap.fromImage(qimg)
+
+
 class LayerPanel(QWidget):
     changed = pyqtSignal()
     committed = pyqtSignal(str)  # discrete user actions worth a history entry
@@ -33,6 +52,9 @@ class LayerPanel(QWidget):
         self.stack = stack
 
         self.list = QListWidget()
+        self.list.setIconSize(QSize(40, 40))
+        self.list.setMinimumHeight(220)
+        self.list.setUniformItemSizes(True)
         self.list.currentRowChanged.connect(self._on_row_changed)
         self.list.itemChanged.connect(self._on_item_changed)
 
@@ -90,6 +112,7 @@ class LayerPanel(QWidget):
             item = QListWidgetItem(layer.name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
             item.setCheckState(Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked)
+            item.setIcon(QIcon(_layer_thumbnail(layer.image, 40)))
             self.list.addItem(item)
 
         if self.stack.active_index >= 0:

@@ -1,5 +1,92 @@
 # Changelog
 
+## 2026-04-30 (round 7)
+
+### Added
+- **Persistent dock layout.** `MainWindow` now saves geometry +
+  `saveState()` to `QSettings("Layered", "Layered")` on close and
+  restores both on launch — every dock's size, area, floating state,
+  and the toolbar position survive across sessions. A snapshot of the
+  default layout is taken at construction so it can be restored later.
+- **View → Panels submenu.** One toggle action per dock (Layers,
+  History, Colors, Console, Projects) plus the Tools & Brush
+  toolbar, generated from `dock.toggleViewAction()` so the checkmark
+  state stays in sync when docks are closed via their `×` button.
+- **View → Reset Layout.** Restores the default geometry / dock
+  arrangement and re-shows any closed panel.
+
+### Changed
+- **Layers dock is roomier.** Layer list `setMinimumHeight(220)` and
+  History dock is split below Layers via `splitDockWidget(...,
+  Qt.Vertical)` so several layers are visible without resizing.
+- **All docks fully drag-snappable.** `_add_dock` now sets
+  `AllDockWidgetAreas` plus `Movable | Floatable | Closable`, so any
+  panel — including Projects — can be dragged into any edge area and
+  snaps in, or torn off as a floating window.
+- Each dock and the toolbar now have `objectName`s so `saveState()` /
+  `restoreState()` can match them on the next launch.
+
+## 2026-04-30 (round 6)
+
+### Added
+- **Layer thumbnails.** `LayerPanel` shows a 40px preview of each
+  layer's image as the list item's icon, so layers are recognisable at
+  a glance without renaming.
+- **Project tab thumbnails.** Each project tab now carries a 28px
+  composited preview of its canvas next to the project name, built from
+  `LayerStack.composite()` at every `_refresh_tabs()`.
+- **Color wheel + quick palette in the Colors panel.** New
+  `ColorWheel` widget (HSV: hue around the ring, saturation along the
+  radius, brightness via a slider). Below it, a 16-swatch quick
+  palette. **Left-click** on the wheel or any swatch sets the
+  **primary** color; **right-click** sets the **secondary** color.
+  Both work during drag for fine tuning.
+
+### Changed
+- **Per-layer export filenames match layer names.** `export_layers`
+  now writes each file as `<layer-name>.<ext>` (sanitized — non
+  alphanumeric / `-_ ` characters become `_`). Duplicate names are
+  disambiguated with ` (2)`, ` (3)`, …. The previous `NN_` index
+  prefix is gone. Manifest still records the index.
+
+## 2026-04-30 (round 5)
+
+### Added
+- **New canvas dialog.** Single `NewCanvasDialog` with width + height spin
+  boxes replaces the back-to-back `QInputDialog` prompts.
+- **Top hot bar for tools + brush settings.** `ToolPanel` gained a
+  `layout="toolbar"` mode (compact horizontal). Mounted as a top
+  `QToolBar` so the tool buttons and brush size / hardness / opacity /
+  spacing controls stop monopolising side-dock space.
+- **Session-remembered export folder.** `MainWindow` tracks
+  `_last_export_dir` / `_last_open_dir`; the export, save, and open
+  dialogs default to the previously used directory.
+- **File → Open Recent.** Submenu lists the last 10 opened images and
+  re-opens with one click. Updated automatically by `Open…` and
+  `Open as Layer…`.
+- **Application icon.** `Icon.png` converted to a multi-resolution
+  `Icon.ico` (16/24/32/48/64/128/256). Window + app icon set on startup.
+  `build.bat` now passes `--icon` to PyInstaller and bundles both
+  `Icon.ico` and `Icon.png` so the icon is present at runtime in the
+  one-file build.
+- **Transform tool.** New tool with 8 anchor handles plus a center-move
+  region drawn around the active layer's opaque bounding box. Drag a
+  handle to scale; hold Shift for uniform scaling (preserves aspect
+  ratio). Implemented via PIL crop → `Image.resize(LANCZOS)` → paste
+  back into the canvas-sized layer. `Canvas` now tracks the Shift
+  modifier through `ToolContext.shift_held`, exposes
+  `canvas_to_screen`, and calls `tool.paint_overlay(painter, canvas)`
+  during repaint so tools can draw screen-space overlays.
+
+### Fixed
+- **Outline plugin did nothing + no settings panel.** `outline_filter`
+  now registers a `Setting[]` spec (color / thickness / opacity /
+  softness / placement) so the generic plugin settings dialog actually
+  opens. `apply()` accepts those kwargs, draws either behind or in
+  front of the source, and respects opacity. Verified: produces a
+  visible outline ring on transparent layers (156 outline pixels around
+  a 10×10 test square).
+
 ## 2026-04-30 (round 4)
 
 ### Added

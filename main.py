@@ -27,10 +27,11 @@ def _emergency_crash(exc_type, exc_value, exc_tb) -> Path:
 
 def main() -> int:
     try:
+        from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
 
         from app.logger import get_logger, install_excepthook
-        from app.main_window import MainWindow
+        from app.main_window import ICON_PATH, ICON_PNG_PATH, MainWindow
     except Exception:
         report = _emergency_crash(*sys.exc_info())
         sys.stderr.write(
@@ -48,6 +49,10 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Layered")
     app.setOrganizationName("Layered")
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
+    elif ICON_PNG_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
     try:
         window = MainWindow()

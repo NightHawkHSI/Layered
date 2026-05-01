@@ -30,6 +30,7 @@ class ToolContext:
     brush_opacity: float = 1.0    # 0-1, multiplies stamp alpha
     brush_spacing: float = 0.2    # fraction of brush size between stamps
     fill_tolerance: int = 32
+    shift_held: bool = False      # set by canvas before each event
 
 
 class Tool:
@@ -48,6 +49,10 @@ class Tool:
     def move(self, layer: Layer, x: int, y: int) -> None: ...
     def release(self, layer: Layer, x: int, y: int) -> None:
         self._last_pt = None
+
+    def paint_overlay(self, painter, canvas) -> None:  # noqa: D401
+        """Optional canvas overlay (handles, guides). Default: nothing."""
+        return None
 
 
 # --- soft circular brush mask cache -----------------------------------------
@@ -301,11 +306,203 @@ class MoveTool(Tool):
         super().release(layer, x, y)
 
 
+class TransformTool(Tool):
+    """Scale the active layer by dragging anchor handles on its bbox.
+
+    Hold Shift to keep aspect ratio. Center handle moves the bbox.
+    """
+    name = "Transform"
+    commit_on = "release"
+
+    HANDLE_SIZE = 10  # screen px
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._mode: Optional[str] = None  # "scale-<corner>" / "move" / None
+        self._anchor: Optional[str] = None
+        self._bbox0: Optional[tuple[int, int, int, int]] = None  # x0,y0,x1,y1 in canvas coords (= layer coords + offset)
+        self._cropped: Optional[Image.Image] = None
+        self._press_pt: Optional[tuple[int, int]] = None
+        self._cur_bbox: Optional[tuple[int, int, int, int]] = None
+
+    # --- bbox helpers ---
+
+    def _layer_bbox(self, layer: Layer) -> Optional[tuple[int, int, int, int]]:
+        bb = layer.image.getbbox()
+        if bb is None:
+            return None
+        ox, oy = layer.offset
+        return (bb[0] + ox, bb[1] + oy, bb[2] + ox, bb[3] + oy)
+
+    def _hit_handle(self, layer: Layer, x: int, y: int, hit_radius: int) -> Optional[str]:
+        bb = self._layer_bbox(layer)
+        if bb is None:
+            return None
+        x0, y0, x1, y1 = bb
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        handles = {
+            "nw": (x0, y0), "n": (cx, y0), "ne": (x1, y0),
+            "w":  (x0, cy),                "e":  (x1, cy),
+            "sw": (x0, y1), "s": (cx, y1), "se": (x1, y1),
+        }
+        best: Optional[tuple[str, int]] = None
+        for name, (hx, hy) in handles.items():
+            d = (x - hx) ** 2 + (y - hy) ** 2
+            if d <= hit_radius * hit_radius and (best is None or d < best[1]):
+                best = (name, d)
+        if best:
+            return best[0]
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return "move"
+        return None
+
+    # --- events ---
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        bb = self._layer_bbox(layer)
+        if bb is None:
+            return
+        zoom = max(getattr(self.ctx, "_canvas_zoom", 1.0), 1e-6)
+        hit_radius = max(8, int(self.HANDLE_SIZE / zoom))
+        h = self._hit_handle(layer, x, y, hit_radius)
+        if h is None:
+            return
+        self._anchor = h
+        self._mode = "move" if h == "move" else f"scale-{h}"
+        self._bbox0 = bb
+        self._cur_bbox = bb
+        self._press_pt = (x, y)
+        ox, oy = layer.offset
+        local = (bb[0] - ox, bb[1] - oy, bb[2] - ox, bb[3] - oy)
+        self._cropped = layer.image.crop(local).convert("RGBA")
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        if self._mode is None or self._bbox0 is None or self._press_pt is None:
+            return
+        x0, y0, x1, y1 = self._bbox0
+        px, py = self._press_pt
+        dx, dy = x - px, y - py
+
+        if self._mode == "move":
+            new_bbox = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._apply(layer, new_bbox)
+            return
+
+        a = self._anchor or ""
+        nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+        if "w" in a: nx0 = x0 + dx
+        if "e" in a: nx1 = x1 + dx
+        if "n" in a: ny0 = y0 + dy
+        if "s" in a: ny1 = y1 + dy
+
+        # Normalize so x0<x1, y0<y1 (allow flip during drag).
+        nx0, nx1 = sorted((nx0, nx1))
+        ny0, ny1 = sorted((ny0, ny1))
+
+        if self.ctx.shift_held:
+            ow = max(1, x1 - x0)
+            oh = max(1, y1 - y0)
+            nw = max(1, nx1 - nx0)
+            nh = max(1, ny1 - ny0)
+            scale = max(nw / ow, nh / oh)
+            tw = max(1, int(round(ow * scale)))
+            th = max(1, int(round(oh * scale)))
+            # anchor opposite corner / edge
+            if "e" in a or a == "n" or a == "s" or a == "move":
+                ax = x0
+            elif "w" in a:
+                ax = x1
+            else:
+                ax = (x0 + x1) // 2
+            if "s" in a or a == "w" or a == "e":
+                ay = y0
+            elif "n" in a:
+                ay = y1
+            else:
+                ay = (y0 + y1) // 2
+            # rebuild around anchor
+            if "e" in a:
+                nx0, nx1 = ax, ax + tw
+            elif "w" in a:
+                nx0, nx1 = ax - tw, ax
+            else:
+                cx = (x0 + x1) // 2
+                nx0, nx1 = cx - tw // 2, cx - tw // 2 + tw
+            if "s" in a:
+                ny0, ny1 = ay, ay + th
+            elif "n" in a:
+                ny0, ny1 = ay - th, ay
+            else:
+                cy = (y0 + y1) // 2
+                ny0, ny1 = cy - th // 2, cy - th // 2 + th
+
+        new_bbox = (nx0, ny0, nx1, ny1)
+        self._apply(layer, new_bbox)
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        self._mode = None
+        self._anchor = None
+        self._bbox0 = None
+        self._cropped = None
+        self._press_pt = None
+        self._cur_bbox = None
+        super().release(layer, x, y)
+
+    # --- apply transform to layer image ---
+
+    def _apply(self, layer: Layer, new_bbox: tuple[int, int, int, int]) -> None:
+        if self._cropped is None:
+            return
+        nx0, ny0, nx1, ny1 = new_bbox
+        nw = max(1, nx1 - nx0)
+        nh = max(1, ny1 - ny0)
+        resized = self._cropped.resize((nw, nh), Image.Resampling.LANCZOS)
+        canvas_w, canvas_h = layer.image.size
+        new_img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        ox, oy = layer.offset
+        paste_x = nx0 - ox
+        paste_y = ny0 - oy
+        new_img.paste(resized, (paste_x, paste_y), resized)
+        layer.image = new_img
+        self._cur_bbox = new_bbox
+
+    def paint_overlay(self, painter, canvas) -> None:
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtGui import QColor, QPen
+        layer = canvas.layer_stack.active
+        if layer is None:
+            return
+        bb = self._cur_bbox or self._layer_bbox(layer)
+        if bb is None:
+            return
+        x0, y0, x1, y1 = bb
+        sx0, sy0 = canvas.canvas_to_screen(x0, y0)
+        sx1, sy1 = canvas.canvas_to_screen(x1, y1)
+        rect = QRect(int(min(sx0, sx1)), int(min(sy0, sy1)),
+                     int(abs(sx1 - sx0)), int(abs(sy1 - sy0)))
+        pen = QPen(QColor(0, 200, 255, 220), 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(QColor(0, 200, 255, 40))
+        painter.drawRect(rect)
+        painter.setBrush(QColor(255, 255, 255, 255))
+        cx = rect.center().x()
+        cy = rect.center().y()
+        hs = self.HANDLE_SIZE
+        for hx, hy in (
+            (rect.left(), rect.top()), (cx, rect.top()), (rect.right(), rect.top()),
+            (rect.left(), cy),                            (rect.right(), cy),
+            (rect.left(), rect.bottom()), (cx, rect.bottom()), (rect.right(), rect.bottom()),
+        ):
+            painter.drawRect(int(hx - hs / 2), int(hy - hs / 2), hs, hs)
+
+
 def build_default_tools(ctx: ToolContext) -> dict[str, Tool]:
     return {
         "Brush": BrushTool(ctx),
         "Eraser": EraserTool(ctx),
         "Move": MoveTool(ctx),
+        "Transform": TransformTool(ctx),
         "Fill": FillTool(ctx),
         "Line": LineTool(ctx),
         "Rectangle": RectTool(ctx),

@@ -11,15 +11,21 @@ from pathlib import Path
 from typing import Optional
 
 from PIL import Image
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QFileDialog,
+    QFormLayout,
     QInputDialog,
     QMainWindow,
     QMessageBox,
+    QSpinBox,
     QStatusBar,
+    QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -45,9 +51,43 @@ from .ui.tool_panel import ToolPanel
 
 if getattr(sys, "frozen", False):
     PROJECT_DIR = Path(sys.executable).resolve().parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", PROJECT_DIR))
 else:
     PROJECT_DIR = Path(__file__).resolve().parent.parent
+    RESOURCE_DIR = PROJECT_DIR
 PLUGINS_DIR = PROJECT_DIR / "Plugins"
+ICON_PATH = RESOURCE_DIR / "Icon.ico"
+if not ICON_PATH.exists():
+    ICON_PATH = PROJECT_DIR / "Icon.ico"
+ICON_PNG_PATH = RESOURCE_DIR / "Icon.png"
+if not ICON_PNG_PATH.exists():
+    ICON_PNG_PATH = PROJECT_DIR / "Icon.png"
+
+
+class NewCanvasDialog(QDialog):
+    def __init__(self, parent=None, w: int = 1024, h: int = 768):
+        super().__init__(parent)
+        self.setWindowTitle("New canvas")
+        self.w_spin = QSpinBox()
+        self.w_spin.setRange(1, 16384)
+        self.w_spin.setValue(w)
+        self.h_spin = QSpinBox()
+        self.h_spin.setRange(1, 16384)
+        self.h_spin.setValue(h)
+        form = QFormLayout()
+        form.addRow("Width:", self.w_spin)
+        form.addRow("Height:", self.h_spin)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(bb)
+
+    def values(self) -> tuple[int, int]:
+        return self.w_spin.value(), self.h_spin.value()
 
 
 class MainWindow(QMainWindow):
@@ -56,9 +96,19 @@ class MainWindow(QMainWindow):
         self.log = get_logger("ui")
         self.setWindowTitle("Layered")
         self.resize(1400, 900)
+        if ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(ICON_PATH)))
+        elif ICON_PNG_PATH.exists():
+            self.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
         self.projects: list[Project] = [Project.blank(width, height)]
         self.active_project: int = 0
+        self._last_export_dir: Optional[Path] = None
+        self._last_open_dir: Optional[Path] = None
+        self._recent_files: list[Path] = []
+        self._recent_menu: Optional[object] = None
+        self._docks: dict[str, QDockWidget] = {}
+        self._settings = QSettings("Layered", "Layered")
 
         self.tool_ctx = ToolContext()
         self.tools = build_default_tools(self.tool_ctx)
@@ -83,11 +133,17 @@ class MainWindow(QMainWindow):
         self.history_panel.undo_requested.connect(self._on_undo)
         self.history_panel.redo_requested.connect(self._on_redo)
         self.history_panel.jump_requested.connect(self._on_history_jump)
-        self._add_dock("History", self.history_panel, Qt.DockWidgetArea.RightDockWidgetArea)
+        history_dock = self._add_dock("History", self.history_panel, Qt.DockWidgetArea.RightDockWidgetArea)
+        # Stack History under Layers vertically so both fit at once.
+        self.splitDockWidget(self._docks["Layers"], history_dock, Qt.Orientation.Vertical)
 
-        self.tool_panel = ToolPanel(self.tool_ctx, self.tools)
+        self.tool_panel = ToolPanel(self.tool_ctx, self.tools, layout="toolbar")
         self.tool_panel.tool_selected.connect(self._on_tool_selected)
-        self._add_dock("Tools", self.tool_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self._tool_bar = QToolBar("Tools & Brush", self)
+        self._tool_bar.setObjectName("toolbar.tools")
+        self._tool_bar.setMovable(True)
+        self._tool_bar.addWidget(self.tool_panel)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_bar)
 
         self.color_panel = ColorPanel(self.tool_ctx)
         self._add_dock("Colors", self.color_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -100,8 +156,7 @@ class MainWindow(QMainWindow):
         self.project_tabs.project_closed.connect(self._close_project)
         self.project_tabs.project_saved.connect(self._save_project)
         self.project_tabs.new_requested.connect(self._on_new)
-        tabs_dock = self._add_dock("Projects", self.project_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
-        tabs_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        self._add_dock("Projects", self.project_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
@@ -116,7 +171,31 @@ class MainWindow(QMainWindow):
 
         self._build_menus()
         self._refresh_tabs()
+        # Snapshot the default layout so users can return to it.
+        self._default_state = self.saveState()
+        self._default_geometry = self.saveGeometry()
+        self._restore_layout()
         self.log.info("Main window initialized: %dx%d", width, height)
+
+    def _restore_layout(self) -> None:
+        geom = self._settings.value("window/geometry")
+        state = self._settings.value("window/state")
+        if geom is not None:
+            self.restoreGeometry(geom)
+        if state is not None:
+            self.restoreState(state)
+
+    def _save_layout(self) -> None:
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("window/state", self.saveState())
+
+    def _reset_layout(self) -> None:
+        self.restoreGeometry(self._default_geometry)
+        self.restoreState(self._default_state)
+        for dock in self._docks.values():
+            dock.show()
+        self._tool_bar.show()
+        self._save_layout()
 
     # --- helpers ---
 
@@ -125,8 +204,16 @@ class MainWindow(QMainWindow):
 
     def _add_dock(self, title: str, widget: QWidget, area: Qt.DockWidgetArea) -> QDockWidget:
         dock = QDockWidget(title, self)
+        dock.setObjectName(f"dock.{title}")
         dock.setWidget(widget)
+        dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
         self.addDockWidget(area, dock)
+        self._docks[title] = dock
         return dock
 
     def _build_menus(self) -> None:
@@ -136,6 +223,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act("New…", self._on_new, "Ctrl+N"))
         file_menu.addAction(self._act("Open…", self._on_open, "Ctrl+O"))
         file_menu.addAction(self._act("Open as Layer…", self._on_open_layer))
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._refresh_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction(self._act("Export…", self._on_export_dialog, "Ctrl+E"))
         file_menu.addAction(self._act("Quick Save Composite…", self._on_quick_save, "Ctrl+S"))
@@ -161,6 +250,18 @@ class MainWindow(QMainWindow):
         view_menu = mb.addMenu("&View")
         view_menu.addAction(self._act("Fit to Window", self.canvas.fit_to_window, "Ctrl+0"))
         view_menu.addAction(self._act("Zoom 100%", lambda: self._set_zoom(1.0), "Ctrl+1"))
+        view_menu.addSeparator()
+        panels_menu = view_menu.addMenu("Panels")
+        for title, dock in self._docks.items():
+            act = dock.toggleViewAction()
+            act.setText(title)
+            panels_menu.addAction(act)
+        panels_menu.addSeparator()
+        toolbar_act = self._tool_bar.toggleViewAction()
+        toolbar_act.setText("Tools && Brush bar")
+        panels_menu.addAction(toolbar_act)
+        view_menu.addSeparator()
+        view_menu.addAction(self._act("Reset Layout", self._reset_layout))
 
         filter_menu = mb.addMenu("F&ilters")
         if not self.plugins.filters:
@@ -228,8 +329,25 @@ class MainWindow(QMainWindow):
         self.redo_action.setEnabled(h.can_redo())
 
     def _refresh_tabs(self) -> None:
+        from PIL.ImageQt import ImageQt
+        from PyQt6.QtGui import QImage, QPixmap
+
         labels = [p.display_name() for p in self.projects]
-        self.project_tabs.set_projects(labels, self.active_project)
+        thumbs: list = []
+        for p in self.projects:
+            try:
+                img = p.stack.composite()
+                w, h = img.size
+                if w == 0 or h == 0:
+                    thumbs.append(QPixmap())
+                    continue
+                scale = min(28 / w, 28 / h)
+                tw, th = max(1, int(w * scale)), max(1, int(h * scale))
+                small = img.resize((tw, th))
+                thumbs.append(QPixmap.fromImage(QImage(ImageQt(small).copy())))
+            except Exception:
+                thumbs.append(QPixmap())
+        self.project_tabs.set_projects(labels, self.active_project, thumbs)
 
     def _switch_project(self, idx: int) -> None:
         if not (0 <= idx < len(self.projects)):
@@ -265,7 +383,7 @@ class MainWindow(QMainWindow):
         if not (0 <= idx < len(self.projects)):
             return
         proj = self.projects[idx]
-        suggested = proj.path or Path(proj.name).with_suffix(".png")
+        suggested = proj.path or (self._last_export_dir / Path(proj.name).with_suffix(".png").name if self._last_export_dir else Path(proj.name).with_suffix(".png"))
         path, _ = QFileDialog.getSaveFileName(self, f"Save '{proj.name}'", str(suggested), "PNG (*.png)")
         if not path:
             return
@@ -273,6 +391,7 @@ class MainWindow(QMainWindow):
             export_composite(proj.stack, path, fmt="PNG", keep_alpha=True)
             proj.path = Path(path)
             proj.dirty = False
+            self._last_export_dir = Path(path).parent
             self._refresh_tabs()
             self.statusBar().showMessage(f"Saved {path}")
         except Exception as e:
@@ -343,12 +462,10 @@ class MainWindow(QMainWindow):
             self.log.info("Tool selected: %s", name)
 
     def _on_new(self) -> None:
-        w, ok = QInputDialog.getInt(self, "New canvas", "Width:", 1024, 1, 16384)
-        if not ok:
+        dlg = NewCanvasDialog(self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
             return
-        h, ok = QInputDialog.getInt(self, "New canvas", "Height:", 768, 1, 16384)
-        if not ok:
-            return
+        w, h = dlg.values()
         self.projects.append(Project.blank(w, h))
         self.active_project = len(self.projects) - 1
         self._bind_current()
@@ -356,11 +473,15 @@ class MainWindow(QMainWindow):
         self.log.info("New canvas %dx%d", w, h)
 
     def _on_open(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.dds)")
+        start = str(self._last_open_dir) if self._last_open_dir else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open image", start, "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.dds)")
         if not path:
             return
+        self._open_image_path(Path(path))
+
+    def _open_image_path(self, path: Path) -> None:
         try:
-            proj = Project.from_image(Path(path))
+            proj = Project.from_image(path)
         except Exception as e:
             QMessageBox.critical(self, "Open failed", str(e))
             return
@@ -368,12 +489,38 @@ class MainWindow(QMainWindow):
         self.active_project = len(self.projects) - 1
         self._bind_current()
         self._refresh_tabs()
+        self._last_open_dir = path.parent
+        self._add_recent(path)
         self.log.info("Opened %s", path)
 
+    def _add_recent(self, path: Path) -> None:
+        try:
+            p = path.resolve()
+        except Exception:
+            p = path
+        self._recent_files = [p] + [q for q in self._recent_files if q != p]
+        del self._recent_files[10:]
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self) -> None:
+        if self._recent_menu is None:
+            return
+        self._recent_menu.clear()
+        if not self._recent_files:
+            placeholder = QAction("(empty)", self)
+            placeholder.setEnabled(False)
+            self._recent_menu.addAction(placeholder)
+            return
+        for p in self._recent_files:
+            self._recent_menu.addAction(self._act(str(p), lambda _=False, q=p: self._open_image_path(q)))
+
     def _on_open_layer(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open as layer", "", "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.dds)")
+        start = str(self._last_open_dir) if self._last_open_dir else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open as layer", start, "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.dds)")
         if not path:
             return
+        self._last_open_dir = Path(path).parent
+        self._add_recent(Path(path))
         dlg = DropActionDialog(1, self, show_new_project=True, show_replace=False)
         dlg.setWindowTitle("Import options")
         if dlg.exec() != dlg.DialogCode.Accepted:
@@ -458,7 +605,7 @@ class MainWindow(QMainWindow):
 
     def _on_quick_save(self) -> None:
         proj = self.current()
-        suggested = proj.path or Path(proj.name).with_suffix(".png")
+        suggested = proj.path or (self._last_export_dir / Path(proj.name).with_suffix(".png").name if self._last_export_dir else Path(proj.name).with_suffix(".png"))
         path, _ = QFileDialog.getSaveFileName(self, "Save composite", str(suggested), "PNG (*.png)")
         if not path:
             return
@@ -466,6 +613,7 @@ class MainWindow(QMainWindow):
             export_composite(proj.stack, path, fmt="PNG", keep_alpha=True)
             proj.path = Path(path)
             proj.dirty = False
+            self._last_export_dir = Path(path).parent
             self._refresh_tabs()
             self.statusBar().showMessage(f"Saved {path}")
         except Exception as e:
@@ -473,13 +621,16 @@ class MainWindow(QMainWindow):
 
     def _on_export_dialog(self) -> None:
         proj = self.current()
-        dlg = ExportDialog(self, default_dir=proj.path.parent if proj.path else None)
+        default = self._last_export_dir or (proj.path.parent if proj.path else None)
+        dlg = ExportDialog(self, default_dir=default)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
         opts = dlg.options()
         if not opts["path"]:
             QMessageBox.warning(self, "Export", "No output path selected.")
             return
+        out_path = Path(opts["path"])
+        self._last_export_dir = out_path if out_path.is_dir() else out_path.parent
         try:
             if opts["per_layer"]:
                 export_layers(
@@ -596,6 +747,10 @@ class MainWindow(QMainWindow):
     # --- lifecycle ---
 
     def closeEvent(self, event):  # noqa: N802
+        try:
+            self._save_layout()
+        except Exception:
+            self.log.exception("Failed to save layout")
         try:
             shutdown_plugins(self.plugins)
         finally:

@@ -47,7 +47,7 @@ echo [build] out : %OUT%
 
 echo.
 echo [build] mirroring source -^> "%GITMAIN%"
-robocopy "%ROOT%" "%GITMAIN%" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "%OUT%" "logs" "__pycache__" ".git" ".idea" ".vscode" ".venv" "venv" ".vs" /XF "*.pyc" "*.pyo" "*.log" "Bugs.txt"
+robocopy "%ROOT%" "%GITMAIN%" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "%OUT%" "logs" "__pycache__" ".git" ".idea" ".vscode" ".venv" "venv" ".vs" "build" "dist" /XF "*.pyc" "*.pyo" "*.log" "Bugs.txt" "*.spec"
 set RC=%ERRORLEVEL%
 echo [build] robocopy exit code: %RC%
 if %RC% GEQ 8 (
@@ -92,8 +92,22 @@ set "PYI=%PY% -m PyInstaller"
 set "BUILDTMP=%OUT%\_pyinstaller"
 if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
 
+REM --- generate Icon.ico from Icon.png if missing.
+if not exist "%ROOT%\Icon.ico" if exist "%ROOT%\Icon.png" (
+    echo [build] generating Icon.ico from Icon.png
+    %PY% -c "from PIL import Image; im=Image.open(r'%ROOT%\Icon.png').convert('RGBA'); im.save(r'%ROOT%\Icon.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+    if errorlevel 1 (
+        echo [build] icon generation failed
+        exit /b 1
+    )
+)
+
+set ICONARG=
+if exist "%ROOT%\Icon.ico" set ICONARG=--icon="%ROOT%\Icon.ico"
+
 %PYI% --noconfirm --onefile --windowed --name Layered ^
     --collect-submodules app ^
+    %ICONARG% ^
     --distpath "%RELEASE%" ^
     --workpath "%BUILDTMP%\build" ^
     --specpath "%BUILDTMP%" ^
@@ -109,6 +123,12 @@ if %ERRORLEVEL% GEQ 8 (
     echo [build] plugin copy failed
     exit /b 1
 )
+
+REM Ship icon next to the exe so the file-explorer thumbnail uses it.
+if exist "%ROOT%\Icon.ico" copy /Y "%ROOT%\Icon.ico" "%RELEASE%\Icon.ico" >nul
+if exist "%ROOT%\Icon.png" copy /Y "%ROOT%\Icon.png" "%RELEASE%\Icon.png" >nul
+if exist "%ROOT%\README.md"    copy /Y "%ROOT%\README.md"    "%RELEASE%\README.md"    >nul
+if exist "%ROOT%\Changelog.md" copy /Y "%ROOT%\Changelog.md" "%RELEASE%\Changelog.md" >nul
 
 rmdir /s /q "%BUILDTMP%"
 

@@ -30,9 +30,21 @@ FORMATS: dict[str, tuple[str, bool]] = {
 }
 
 
-def _safe_name(name: str, idx: int) -> str:
+def _safe_name(name: str) -> str:
     cleaned = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
-    return f"{idx:02d}_{cleaned or 'layer'}"
+    return cleaned or "layer"
+
+
+def _unique_name(base: str, used: set[str]) -> str:
+    if base not in used:
+        used.add(base)
+        return base
+    n = 2
+    while f"{base} ({n})" in used:
+        n += 1
+    final = f"{base} ({n})"
+    used.add(final)
+    return final
 
 
 def flatten_alpha(image: Image.Image, bg: tuple[int, int, int] = (255, 255, 255)) -> Image.Image:
@@ -92,8 +104,10 @@ def export_layers(
         "layers": [],
     }
 
+    used: set[str] = set()
     for idx, layer in enumerate(stack.layers):
-        fname = _safe_name(layer.name, idx) + f".{ext}"
+        base = _unique_name(_safe_name(layer.name), used)
+        fname = base + f".{ext}"
         fpath = out / fname
 
         canvas = Image.new("RGBA", (stack.width, stack.height), (0, 0, 0, 0))

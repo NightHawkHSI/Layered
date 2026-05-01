@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -17,13 +18,17 @@ class _ProjectTab(QWidget):
     closed = pyqtSignal(int)
     saved = pyqtSignal(int)
 
-    def __init__(self, index: int, label: str, active: bool, parent=None):
+    def __init__(self, index: int, label: str, active: bool,
+                 thumbnail: Optional[QPixmap] = None, parent=None):
         super().__init__(parent)
         self.index = index
         self.select_btn = QPushButton(label)
         self.select_btn.setCheckable(True)
         self.select_btn.setChecked(active)
-        self.select_btn.setMinimumWidth(120)
+        self.select_btn.setMinimumWidth(140)
+        if thumbnail is not None and not thumbnail.isNull():
+            self.select_btn.setIcon(QIcon(thumbnail))
+            self.select_btn.setIconSize(QSize(28, 28))
         self.select_btn.clicked.connect(lambda: self.activated.emit(self.index))
 
         self.save_btn = QPushButton("💾")
@@ -72,7 +77,8 @@ class ProjectTabs(QWidget):
         outer.addWidget(self.scroll, 1)
         outer.addWidget(self.new_btn)
 
-    def set_projects(self, labels: list[str], active_index: int) -> None:
+    def set_projects(self, labels: list[str], active_index: int,
+                     thumbnails: Optional[list[QPixmap]] = None) -> None:
         # Wipe row
         while self._row.count():
             item = self._row.takeAt(0)
@@ -82,7 +88,8 @@ class ProjectTabs(QWidget):
                 w.deleteLater()
 
         for i, label in enumerate(labels):
-            tab = _ProjectTab(i, label, i == active_index)
+            thumb = thumbnails[i] if thumbnails and i < len(thumbnails) else None
+            tab = _ProjectTab(i, label, i == active_index, thumbnail=thumb)
             tab.activated.connect(self.project_activated.emit)
             tab.closed.connect(self.project_closed.emit)
             tab.saved.connect(self.project_saved.emit)

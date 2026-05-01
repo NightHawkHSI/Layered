@@ -122,6 +122,12 @@ class Canvas(QWidget):
         painter.setPen(QPen(QColor(0, 0, 0, 200), 1))
         painter.drawRect(target)
 
+        if self.tool is not None and hasattr(self.tool, "paint_overlay"):
+            try:
+                self.tool.paint_overlay(painter, self)
+            except Exception:
+                pass
+
     # --- mouse → tool routing ---
 
     def _to_canvas_coords(self, pos) -> tuple[int, int]:
@@ -133,6 +139,26 @@ class Canvas(QWidget):
         cy = int((pos.y() - y0) / max(self.zoom, 1e-6))
         return cx, cy
 
+    def canvas_to_screen(self, cx: float, cy: float) -> tuple[float, float]:
+        scaled_w = int(self.layer_stack.width * self.zoom)
+        scaled_h = int(self.layer_stack.height * self.zoom)
+        x0 = (super().width() - scaled_w) // 2 + self._pan.x()
+        y0 = (super().height() - scaled_h) // 2 + self._pan.y()
+        return x0 + cx * self.zoom, y0 + cy * self.zoom
+
+    def _update_modifiers(self, e) -> None:
+        tool = self.tool
+        if tool is None:
+            return
+        ctx = getattr(tool, "ctx", None)
+        if ctx is None:
+            return
+        ctx.shift_held = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        try:
+            ctx._canvas_zoom = self.zoom  # transform tool uses to size handles
+        except Exception:
+            pass
+
     def mousePressEvent(self, e):  # noqa: N802
         if e.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
@@ -143,6 +169,7 @@ class Canvas(QWidget):
             return  # ignore right-click and others; tools only fire on left
         if self.tool is None or self.layer_stack.active is None:
             return
+        self._update_modifiers(e)
         cx, cy = self._to_canvas_coords(e.position().toPoint())
         self.tool.press(self.layer_stack.active, cx, cy)
         self.refresh()
@@ -158,6 +185,7 @@ class Canvas(QWidget):
         if self.tool is None or self.layer_stack.active is None:
             return
         if e.buttons() & Qt.MouseButton.LeftButton:
+            self._update_modifiers(e)
             cx, cy = self._to_canvas_coords(e.position().toPoint())
             self.tool.move(self.layer_stack.active, cx, cy)
             self.refresh()
@@ -171,6 +199,7 @@ class Canvas(QWidget):
             return
         if self.tool is None or self.layer_stack.active is None:
             return
+        self._update_modifiers(e)
         cx, cy = self._to_canvas_coords(e.position().toPoint())
         self.tool.release(self.layer_stack.active, cx, cy)
         self.refresh()
