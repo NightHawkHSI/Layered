@@ -106,14 +106,6 @@ Bug reports and feature requests go in Issues.
 
 Roadmap
 
- Selection tools (marquee, lasso, magic wand)
- Text tool with font support
- Animation timeline for sprite sheets
- More blend modes (Hue, Saturation, Color, Luminosity)
- Theme support (light / dark)
- Plugin marketplace / registry
-
-
 <div align="center">
 Made with Python · <a href="https://github.com/NightHawkHSI/Layered/blob/main/LICENSE">License</a> · <a href="https://github.com/NightHawkHSI/Layered/issues">Issues</a> · <a href="docs/PLUGIN_API.md">Plugin Docs</a>
 </div>
