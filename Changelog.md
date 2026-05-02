@@ -1,5 +1,280 @@
 # Changelog
 
+## 2026-05-02 (round 27)
+
+### Changed
+- **`build.bat` now reports live stage progress.** The previous
+  script redirected the entire build into `build-error.log` and
+  showed nothing on screen until everything finished, so a
+  multi-minute PyInstaller freeze looked indistinguishable from a
+  hang. Each stage now prints a `[NN%] description` line to the
+  console (mirror source 5%, check Python 15%, upgrade pip 20%,
+  install requirements 35%, install PyInstaller 50%, generate icon
+  55%, freeze exe 60%, copy plugins 92%, copy assets 96%, done
+  100%) while the verbose tool output (pip, robocopy, pyinstaller)
+  still goes to the log. On failure, the script prints the
+  failing stage and tails the last 40 lines of the log via
+  `powershell Get-Content -Tail 40` so the actual error is visible
+  without opening the file.
+
+## 2026-05-02 (round 26)
+
+### Added
+- **Project save / load via `.layered` files.** New `app/project_io.py`
+  bundles a `Project` into a single ZIP-deflated archive containing
+  `manifest.json` (name, description, canvas size, active index,
+  per-layer metadata: name / visibility / opacity / blend mode /
+  offset / locked / group), one `layer_NNN.png` per layer, and an
+  optional `selection.png` (canvas-sized L mask) so the active
+  selection round-trips. File menu gained:
+  - **Open Project…** — picks a `.layered` archive and adds it as a
+    new tab.
+  - **Save Project** (`Ctrl+S`) — writes back to the project's
+    existing `.layered` path; falls through to *Save Project As* if
+    none is set yet.
+  - **Save Project As…** (`Ctrl+Shift+S`) — file dialog with the
+    `.layered` filter, force-appends the extension if missing,
+    updates `proj.path` / `proj.name` / window title, and pushes
+    the path into Recent Files.
+  Recent Files now route by extension: `.layered` paths reopen as
+  projects, image extensions still go through the original image
+  loader. `Ctrl+S` previously bound to *Quick Save Composite*; that
+  action moved off the shortcut and stays available from the menu.
+  *File → Open…* (image) renamed to *Open Image…* to disambiguate
+  it from *Open Project…*. Verified a 2-layer project with custom
+  opacity / blend mode / active-index / selection round-trips
+  through save → load with all metadata intact in a 1 KB archive.
+
+## 2026-05-02 (round 25)
+
+### Fixed
+- **Radial paste menu shadow artefact on the right and bottom edges.**
+  Two converging causes on Windows. (1) `Qt.WindowType.Popup |
+  FramelessWindowHint` still inherits the OS-level Windows 11 popup
+  drop shadow; added `Qt.WindowType.NoDropShadowWindowHint`.
+  (2) `WA_TranslucentBackground` allocates a translucent back buffer
+  but does not auto-clear it between repaints, so the previous
+  frame's antialiased ring leaked along the right/bottom strips.
+  `paintEvent` now starts with a `CompositionMode_Source` +
+  `fillRect(transparent)` clear before drawing the wedges.
+- **Layer panel could not shrink below the natural button-row width.**
+  The action buttons (`+ Add`, `Dup`, `Delete`, `Up`, `Down`,
+  `Rename`) sized themselves to fit their text labels, which forced
+  the panel's minimum width to roughly six full English labels —
+  too wide for narrow side docks on smaller / scaled displays.
+  Buttons now use single-glyph labels (`＋`, `⎘`, `✕`, `▲`, `▼`,
+  `✎`) with the original text moved to tooltips, plus
+  `setMinimumWidth(0)` and a `QSizePolicy.Ignored` horizontal
+  policy that lets each button shrink past its sizeHint without
+  clipping the dock. Same `Ignored` policy applied to the blend
+  combo, opacity slider, and Export button so the entire panel
+  collapses to roughly the layer-list thumbnail width.
+
+## 2026-05-02 (round 24)
+
+### Added
+- **Radial paste menu at the cursor.** `Ctrl+V` now pops a frameless
+  pie menu (`app/ui/radial_menu.py`) with the paste destinations as
+  ring wedges instead of dropping pixels immediately. Default
+  options: *New Layer*, *Current Layer*, *New Project*. When the
+  clipboard image is bigger than the current canvas, the menu
+  expands to five wedges — *New Layer (keep canvas)*, *Current Layer
+  (keep canvas)*, *New Layer (extend canvas)*, *Current Layer
+  (extend canvas)*, *New Project* — so canvas-resize decisions are
+  inline with the paste choice rather than a separate modal. Hover
+  highlights, click commits, click outside or Esc cancels. The
+  underlying paste primitives (`_paste_new_layer`,
+  `_paste_into_layer`, `_paste_new_project`) are shared with the
+  `Ctrl+Shift+V` quick-paste-into-current shortcut and the legacy
+  resolve-source flow. The legacy `_ask_paste_mode` modal is no
+  longer reached on the standard `Ctrl+V` path.
+- **Selection modifier keys for Marquee / Lasso / Magic Wand.**
+  `ToolContext` gained `ctrl_held`, populated each event by
+  `Canvas._update_modifiers`. Behaviour:
+  - **Shift** → add the new selection to the current one
+    (`ImageChops.lighter`).
+  - **Alt** → subtract the new selection from the current one
+    (`current AND NOT new`, threshold-binarised).
+  - **Ctrl** (Magic Wand only) → select-similar: skip the
+    flood-fill contiguity pass and select every pixel in the layer
+    matching the clicked color within `fill_tolerance` (Photoshop's
+    "Select → Similar"). Combines with Shift/Alt the same way.
+  When Shift or Alt is held, the existing drag-move-inside logic in
+  `_SelectionToolBase._begin_move_if_inside` is suppressed so a
+  click inside the current selection can refine it instead of
+  accidentally lifting pixels.
+
+## 2026-05-02 (round 23)
+
+### Changed
+- **Selection marching ants follow the actual mask shape.** The
+  canvas used to paint a single dashed `QRect` over `sel.bbox`, so
+  a Magic-Wand selection of a circle still showed a square outline,
+  obscuring which pixels were actually selected. `Canvas.paintEvent`
+  now traces the mask boundary into 1-pixel canvas-space edge
+  segments via four vectorised numpy passes (top / bottom / left /
+  right boundary detection: `arr[i, :] & ~arr[i-1, :]` etc., with
+  boundary-row fall-throughs so masks that touch the canvas edge
+  still close), converts each segment to screen coords, and emits
+  them via a single `QPainter.drawLines(QLineF[])` call. Result:
+  circle selections paint a dashed circle, lasso selections paint
+  the polygon outline, brush-feathered alpha masks paint the alpha
+  contour. Cached per `(id(mask), mask.size)` so a stationary
+  selection costs zero recomputation across pan/zoom repaints.
+
+### Added
+- **Paste Into Current Layer** (`Ctrl+Shift+V`, Edit menu).
+  Clipboard pixels alpha-composite into the active layer instead of
+  creating a new layer. Same source resolution as `Ctrl+V` (prefers
+  `_copy_buffer`, falls back to the system clipboard); same-project
+  pastes land at the original bbox position so a copy → paste-into
+  round-trip is positionally lossless, and cross-project pastes
+  anchor at canvas (0, 0). Pixels are blitted into a layer-sized
+  numpy buffer and merged with `Image.alpha_composite`, so blending
+  is correct over partially-opaque destinations (no premultiply).
+  Selection clears on paste, matching the new-layer paste flow.
+
+## 2026-05-02 (round 22)
+
+### Fixed
+- **Copy/paste round-trip is now byte-exact for anti-aliased and
+  semi-transparent pixels.** Round 21 switched the same-project paste
+  to a no-mask `paste(img, dest)` to dodge the implicit alpha-mask
+  premultiply on the *destination* side, but `_on_copy` was still
+  using `canvas_layer.paste(src, (ox, oy))` on the *source* side.
+  Pillow's behaviour for `paste` with an RGBA source and no explicit
+  mask is version-dependent — some builds copy RGBA verbatim, others
+  silently use the source alpha as a mask, which premultiplies RGB
+  into a transparent destination and squares the alpha. Anti-aliased
+  brush edges (any pixel with α < 255) lost colour and faded toward
+  zero alpha across that step, so the user saw "didn't copy all the
+  colors or pixels" even after the destination-side fix landed.
+  Replaced both the source-blit (in `_on_copy`) and the four paste
+  blits (same-project, extend, anchor, crop) with explicit NumPy
+  slice assignment + a numpy `α × sel_mask // 255` for the selection
+  multiply. No more PIL-version-dependent paste semantics anywhere
+  in the copy/paste path; verified a 20×20 anti-aliased gradient
+  round-trips with `np.array_equal == True` on every alpha value
+  including the feathered edges.
+- **Enter exits the post-paste Transform.** Round 21's
+  `_confirm_selection` only flushed tools that exposed a `commit()`
+  method, but `TransformTool` does not — it commits per-release
+  through `commit_on = "release"` and instead just keeps drawing its
+  bbox + 8 handles overlay until the user picks a different tool.
+  Pasting auto-activates Transform, and pressing Enter would clear
+  the (already-cleared) selection while leaving the handles on
+  screen, looking like Enter was a no-op. Now `_confirm_selection`
+  also switches the active tool back to `Brush` whenever the active
+  tool is `Transform` / `Sel Transform` / `Move`, so Enter cleanly
+  drops the transform overlay and the marching ants together. Tool
+  switch goes through the existing `_on_tool_selected` path so
+  `prev.commit()` still fires for tools that need it.
+
+## 2026-05-02 (round 21)
+
+### Fixed
+- **Same-project paste finally drops the actual pixels.** Round 20
+  fixed the *copy* side (no more PIL paste-with-mask premultiply on
+  the way into `_copy_buffer`), but `_on_paste`'s same-project branch
+  still called `canvas_layer.paste(img, (bb[0], bb[1]), img)` —
+  passing `img` as the mask, which re-runs the same premultiply on
+  the way back out: for any source pixel whose alpha is < 255, the
+  RGBA blends into a transparent destination as
+  `out_rgb = src_rgb × alpha/255`, `out_alpha = src_alpha²/255`. A
+  brush stroke painted at <100% opacity (or any anti-aliased edge)
+  paints with sub-255 alpha everywhere, so paste produced a layer
+  whose pixels were so faint and so small-alpha that the user only
+  saw the dashed selection rectangle drawn on top. Same fix in the
+  three cross-project / external paste branches. Now using a
+  no-mask `paste(img, dest)` which is a verbatim RGBA copy (the
+  cropped buffer already carries `layer_alpha × sel_mask` as its own
+  alpha, so a mask second-multiply was always wrong, not just
+  redundant).
+- **Paste clears the source selection.** The dashed marching-ants
+  rectangle from the original copy used to keep drawing on top of
+  the pasted layer, which read as "the selection moved but the
+  pixels didn't" even when the pixels were correct. `_on_paste` now
+  sets `proj.selection = None` before refresh in both same-project
+  and cross-project branches.
+
+### Added
+- **Layer panel: Duplicate button.** New `Dup` button between
+  `+ Add` and `Delete` (tooltip notes the existing `Ctrl+J`
+  shortcut). Routes through `LayerPanel.duplicate_requested` →
+  `MainWindow._on_duplicate_layer` so the click and the menu/
+  shortcut go through the exact same code path (history snapshot
+  included).
+- **Enter confirms the active selection.** `MainWindow.keyPressEvent`
+  used to swallow Return/Enter outright (round 19). Now it routes
+  through a new `_confirm_selection`: any tool that exposes a
+  `commit()` (Sel Transform, Text, shape edit sessions) gets called
+  first so an in-progress floating buffer or shape lands as a
+  history entry, then `proj.selection` is cleared and the canvas is
+  refreshed. Photoshop-style Enter-to-confirm. Text inputs still
+  consume the key before it bubbles up, so typing a layer name or
+  spinbox value still works.
+
+## 2026-05-02 (round 20)
+
+### Fixed
+- **Magic Wand copy/paste/move actually moves pixels, not just the
+  marching ants.** Three converging bugs:
+  1. `MagicWandTool.press` sampled `arr[y, x]` with canvas coords on a
+     layer-local NumPy buffer, so any layer with a non-zero offset
+     either flood-filled from the wrong target or threw an index error,
+     producing a mask that didn't enclose the clicked pixels.
+  2. The wand also produced a layer-sized mask `(w + ox, h + oy)`
+     while marquee/lasso committed canvas-sized masks via
+     `Selection.rect`. Downstream code (`_on_copy`, `_on_cut`,
+     `_apply_selection_to_stamp`) silently used whichever size the
+     active selection happened to be, so cropping a marquee then a
+     wand produced different alpha alignment.
+  3. `_on_copy` used `tmp.paste(layer.image, offset, layer.image)` —
+     PIL's paste-with-mask premultiplies source RGB into a transparent
+     destination, so any pixel under alpha < 255 came out darkened
+     before the alpha was rewritten with `sel_mask × layer_alpha`.
+  Fix: wand now converts to layer-local coords (`x - ox, y - oy`) for
+  sampling and indexing; a new `ToolContext.get_canvas_size` callback
+  lets every selection tool build canvas-sized masks via a shared
+  `_canvas_size` helper; `_on_copy` does a straight `paste` (no mask)
+  onto a canvas-sized RGBA buffer and multiplies the pixel alpha by
+  the canvas-aligned selection mask afterwards. `_on_cut` got the
+  same defensive size handling. Marquee and Lasso bbox math was
+  cleaned up to drop the double-offset that had been canceling out
+  only when `layer.offset == (0, 0)`.
+
+### Added
+- **Selection transform with anchor handles.** New
+  `SelectionTransformTool` (`Ctrl+T`, "Sel Transform" in the tools
+  dock). On first interaction it lifts the pixels under the active
+  selection mask off the layer (`layer.image = base; floating =
+  layer × mask`), then renders 8 corner/edge handles plus a
+  center-move region around the bbox. Drag a handle to scale the
+  lifted pixels with `LANCZOS` resampling (Shift = aspect-lock); drag
+  inside to translate; click outside to commit. The selection mask
+  follows the bbox live so the marching ants always wrap the floating
+  pixels. Switching tools commits via the existing `prev.commit()`
+  hook.
+- **Image menu.** Crop to Selection, Resize Image (LANCZOS resample
+  with proportional layer-offset rescaling), Flip Horizontal/Vertical,
+  Rotate 90 CW / 90 CCW / 180 (canvas dims swap on the 90s), Flatten
+  Image, plus the existing Resize Canvas. All operations rebuild
+  per-layer offsets so layers with non-zero offsets stay anchored
+  correctly through the transform.
+- **Layer menu.** New Layer (`Ctrl+Shift+N`), Duplicate Layer
+  (`Ctrl+J`, copies image + visibility/opacity/blend/offset/lock/
+  group), Merge Down (`Ctrl+Shift+E`, composites the active layer
+  into the one below using the existing blend pipeline; respects
+  blend mode, opacity, and visibility).
+- **Edit menu QoL.** Invert Selection (`Ctrl+Shift+I`, computes
+  `255 - mask` and rebuilds the bbox), Transform Selection (`Ctrl+T`,
+  switches to Sel Transform), Fill with Primary (`Alt+Backspace`),
+  Fill with Secondary (`Ctrl+Backspace`). Fill respects the active
+  selection and the active layer's offset; with no selection, fills
+  the whole layer.
+- **View menu.** Zoom In (`Ctrl+=` and `Ctrl++` for both layouts),
+  Zoom Out (`Ctrl+-`).
+
 ## 2026-05-01 (round 19)
 
 ### Fixed

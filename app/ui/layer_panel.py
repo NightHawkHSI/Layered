@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -45,6 +46,7 @@ def _layer_thumbnail(image, size: int) -> QPixmap:
 class LayerPanel(QWidget):
     changed = pyqtSignal()
     committed = pyqtSignal(str)  # discrete user actions worth a history entry
+    duplicate_requested = pyqtSignal()
     export_requested = pyqtSignal()
 
     def __init__(self, stack: LayerStack, parent: Optional[QWidget] = None):
@@ -60,13 +62,25 @@ class LayerPanel(QWidget):
         self.list.currentRowChanged.connect(self._on_row_changed)
         self.list.itemChanged.connect(self._on_item_changed)
 
-        self.add_btn = QPushButton("+ Add")
-        self.del_btn = QPushButton("Delete")
+        # Compact glyphs + tooltips so the button row can shrink to a
+        # narrow dock width on small screens. Letting Qt size each
+        # button by its label text was forcing the panel's minimum
+        # width to ~6×label width, which kept the dock too wide on
+        # smaller / scaled displays.
+        self.add_btn = QPushButton("＋")
+        self.add_btn.setToolTip("Add layer")
+        self.dup_btn = QPushButton("⎘")
+        self.dup_btn.setToolTip("Duplicate the selected layer (Ctrl+J)")
+        self.del_btn = QPushButton("✕")
         self.del_btn.setToolTip("Delete the selected layer (Del)")
-        self.up_btn = QPushButton("Up")
-        self.down_btn = QPushButton("Down")
-        self.rename_btn = QPushButton("Rename")
+        self.up_btn = QPushButton("▲")
+        self.up_btn.setToolTip("Move layer up")
+        self.down_btn = QPushButton("▼")
+        self.down_btn.setToolTip("Move layer down")
+        self.rename_btn = QPushButton("✎")
+        self.rename_btn.setToolTip("Rename layer")
         self.add_btn.clicked.connect(self._on_add)
+        self.dup_btn.clicked.connect(self.duplicate_requested.emit)
         self.del_btn.clicked.connect(self._on_del)
         self.up_btn.clicked.connect(self._on_up)
         self.down_btn.clicked.connect(self._on_down)
@@ -77,18 +91,27 @@ class LayerPanel(QWidget):
         self._del_shortcut.activated.connect(self._on_del)
 
         btn_row = QHBoxLayout()
-        for b in (self.add_btn, self.del_btn, self.up_btn, self.down_btn, self.rename_btn):
-            btn_row.addWidget(b)
+        btn_row.setSpacing(2)
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        for b in (self.add_btn, self.dup_btn, self.del_btn, self.up_btn, self.down_btn, self.rename_btn):
+            b.setMinimumWidth(0)
+            b.setMaximumWidth(48)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            btn_row.addWidget(b, 1)
 
         self.blend_combo = QComboBox()
         self.blend_combo.addItems(list(BLEND_MODES.keys()))
         self.blend_combo.currentTextChanged.connect(self._on_blend_change)
+        self.blend_combo.setMinimumWidth(0)
+        self.blend_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.valueChanged.connect(self._on_opacity_change)
         self.opacity_slider.sliderReleased.connect(self._on_opacity_release)
+        self.opacity_slider.setMinimumWidth(0)
+        self.opacity_slider.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Layers"))
@@ -101,6 +124,8 @@ class LayerPanel(QWidget):
 
         self.export_btn = QPushButton("Export…")
         self.export_btn.clicked.connect(self.export_requested.emit)
+        self.export_btn.setMinimumWidth(0)
+        self.export_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.export_btn)
 
         self.refresh()

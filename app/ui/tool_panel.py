@@ -54,6 +54,7 @@ TOOL_SETTINGS: dict[str, list[str]] = {
     "Transform":   [],
     "Marquee":     [],
     "Lasso":       [],
+    "Sel Transform": [],
 }
 
 

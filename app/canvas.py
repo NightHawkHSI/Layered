@@ -10,8 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from PIL.ImageQt import ImageQt
-from PyQt6.QtCore import QPoint, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
@@ -43,6 +44,11 @@ class Canvas(QWidget):
         self._dirty = True
         self._panning = False
         self.selection_provider = None  # callable -> Optional[Selection]
+        # Cache of canvas-space selection edge segments keyed by the
+        # mask object id + size, so repaint doesn't re-scan the whole
+        # mask every frame. Each entry is a list of (x0, y0, x1, y1)
+        # in canvas pixel coords representing a single 1-px edge.
+        self._sel_edge_cache: tuple[Optional[int], Optional[tuple[int, int]], list[tuple[int, int, int, int]]] = (None, None, [])
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
     # --- public API ---
@@ -123,21 +129,27 @@ class Canvas(QWidget):
         painter.setPen(QPen(QColor(0, 0, 0, 200), 1))
         painter.drawRect(target)
 
-        # Selection bbox (dashed)
+        # Selection outline — traces the actual mask boundary, so a
+        # circular magic-wand selection paints a circle of marching
+        # ants instead of the bbox rectangle.
         if self.selection_provider is not None:
             try:
                 sel = self.selection_provider()
             except Exception:
                 sel = None
-            if sel is not None:
-                bb = sel.bbox
-                sx0, sy0 = self.canvas_to_screen(bb[0], bb[1])
-                sx1, sy1 = self.canvas_to_screen(bb[2], bb[3])
-                pen = QPen(QColor(255, 255, 255, 220), 1, Qt.PenStyle.DashLine)
-                pen.setCosmetic(True)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(sx0, sy0, sx1 - sx0, sy1 - sy0))
+            if sel is not None and getattr(sel, "mask", None) is not None:
+                segs = self._selection_edges(sel.mask)
+                if segs:
+                    pen = QPen(QColor(255, 255, 255, 220), 1, Qt.PenStyle.DashLine)
+                    pen.setCosmetic(True)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    lines: list[QLineF] = []
+                    for x0c, y0c, x1c, y1c in segs:
+                        sx0, sy0 = self.canvas_to_screen(x0c, y0c)
+                        sx1, sy1 = self.canvas_to_screen(x1c, y1c)
+                        lines.append(QLineF(sx0, sy0, sx1, sy1))
+                    painter.drawLines(lines)
 
         if self.tool is not None and hasattr(self.tool, "paint_overlay"):
             try:
@@ -156,6 +168,58 @@ class Canvas(QWidget):
         cy = int((pos.y() - y0) / max(self.zoom, 1e-6))
         return cx, cy
 
+    def _selection_edges(self, mask) -> list[tuple[int, int, int, int]]:
+        """Return canvas-space 1-px edge segments along the mask boundary.
+
+        Vectorised border trace: a pixel contributes a top edge when its
+        cell above is unset (or off-image), a bottom edge when the cell
+        below is unset, and likewise for left/right. The segments are
+        cached per (mask id, size) so panning / zooming doesn't re-scan
+        the whole mask each repaint.
+        """
+        cache_id, cache_size, cache_segs = self._sel_edge_cache
+        if cache_id == id(mask) and cache_size == mask.size:
+            return cache_segs
+        try:
+            arr = np.asarray(mask.convert("L") if mask.mode != "L" else mask, dtype=np.uint8) > 0
+        except Exception:
+            return []
+        if not arr.any():
+            self._sel_edge_cache = (id(mask), mask.size, [])
+            return []
+        h, w = arr.shape
+        segs: list[tuple[int, int, int, int]] = []
+        # Top edges: pixel set, cell above unset → horizontal line at y.
+        top = np.zeros_like(arr)
+        top[1:, :] = arr[1:, :] & ~arr[:-1, :]
+        top[0, :] = arr[0, :]
+        ys, xs = np.nonzero(top)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            segs.append((x, y, x + 1, y))
+        # Bottom edges.
+        bot = np.zeros_like(arr)
+        bot[:-1, :] = arr[:-1, :] & ~arr[1:, :]
+        bot[-1, :] = arr[-1, :]
+        ys, xs = np.nonzero(bot)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            segs.append((x, y + 1, x + 1, y + 1))
+        # Left edges.
+        left = np.zeros_like(arr)
+        left[:, 1:] = arr[:, 1:] & ~arr[:, :-1]
+        left[:, 0] = arr[:, 0]
+        ys, xs = np.nonzero(left)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            segs.append((x, y, x, y + 1))
+        # Right edges.
+        right = np.zeros_like(arr)
+        right[:, :-1] = arr[:, :-1] & ~arr[:, 1:]
+        right[:, -1] = arr[:, -1]
+        ys, xs = np.nonzero(right)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            segs.append((x + 1, y, x + 1, y + 1))
+        self._sel_edge_cache = (id(mask), mask.size, segs)
+        return segs
+
     def canvas_to_screen(self, cx: float, cy: float) -> tuple[float, float]:
         scaled_w = int(self.layer_stack.width * self.zoom)
         scaled_h = int(self.layer_stack.height * self.zoom)
@@ -173,6 +237,7 @@ class Canvas(QWidget):
         mods = e.modifiers()
         ctx.shift_held = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         ctx.alt_held = bool(mods & Qt.KeyboardModifier.AltModifier)
+        ctx.ctrl_held = bool(mods & Qt.KeyboardModifier.ControlModifier)
         try:
             ctx._canvas_zoom = self.zoom  # transform tool uses to size handles
         except Exception:
