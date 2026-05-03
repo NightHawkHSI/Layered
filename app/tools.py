@@ -47,6 +47,9 @@ class ToolContext:
     # selection tools can build canvas-sized masks regardless of where
     # the active layer sits.
     get_canvas_size: Optional[Callable[[], Tuple[int, int]]] = None
+    # Fired by ToolPanel after `fill_tolerance` changes so the magic-wand
+    # tool can re-run from its last seed for live preview.
+    on_tolerance_changed: Optional[Callable[[], None]] = None
 
 
 class Tool:
@@ -146,33 +149,48 @@ def _apply_selection_to_stamp(stamp_alpha: Image.Image, ctx: ToolContext, layer:
 
 def _stamp_color(layer: Layer, x: int, y: int, color: Color, mask: Image.Image, opacity: float,
                  ctx: Optional[ToolContext] = None) -> None:
-    """Paint a color stamp using `mask` as alpha, blended onto layer.image."""
+    """Paint a color stamp using `mask` as alpha, blended onto layer.image.
+
+    `x, y` are canvas-space coordinates. Layers may sit at a non-zero
+    offset (e.g. clipboard pastes via `Layer.offset`), so we translate
+    into layer-image space before compositing — otherwise the stamp
+    lands at the canvas origin instead of under the cursor.
+    """
     r = mask.size[0] // 2
+    ox, oy = layer.offset
+    lx, ly = x - ox, y - oy
     final_alpha = (color[3] / 255.0) * opacity
     m = _scaled_mask(mask, final_alpha)
     if ctx is not None:
-        m = _apply_selection_to_stamp(m, ctx, layer, (x - r, y - r))
+        m = _apply_selection_to_stamp(m, ctx, layer, (lx - r, ly - r))
     stamp = Image.new("RGBA", mask.size, color[:3] + (0,))
     stamp.putalpha(m)
-    layer.image.alpha_composite(stamp, dest=(x - r, y - r))
+    layer.image.alpha_composite(stamp, dest=(lx - r, ly - r))
 
 
 def _stamp_erase(layer: Layer, x: int, y: int, mask: Image.Image, opacity: float,
                  ctx: Optional[ToolContext] = None) -> None:
-    """Erase by reducing alpha where `mask` is set."""
+    """Erase by reducing alpha where `mask` is set.
+
+    `x, y` are canvas-space; translate by `layer.offset` to operate on
+    layer-image pixels (otherwise pasted/offset layers erase from the
+    wrong region).
+    """
     r = mask.size[0] // 2
+    ox, oy = layer.offset
+    lx, ly = x - ox, y - oy
     m = _scaled_mask(mask, opacity)
     if ctx is not None:
-        m = _apply_selection_to_stamp(m, ctx, layer, (x - r, y - r))
+        m = _apply_selection_to_stamp(m, ctx, layer, (lx - r, ly - r))
     s = mask.size[0]
-    x0 = max(x - r, 0)
-    y0 = max(y - r, 0)
-    x1 = min(x - r + s, layer.image.width)
-    y1 = min(y - r + s, layer.image.height)
+    x0 = max(lx - r, 0)
+    y0 = max(ly - r, 0)
+    x1 = min(lx - r + s, layer.image.width)
+    y1 = min(ly - r + s, layer.image.height)
     if x1 <= x0 or y1 <= y0:
         return
-    mx0 = x0 - (x - r)
-    my0 = y0 - (y - r)
+    mx0 = x0 - (lx - r)
+    my0 = y0 - (ly - r)
     mx1 = mx0 + (x1 - x0)
     my1 = my0 + (y1 - y0)
 
@@ -251,14 +269,16 @@ class FillTool(Tool):
     commit_on = "press"
 
     def press(self, layer: Layer, x: int, y: int) -> None:
-        if not (0 <= x < layer.image.width and 0 <= y < layer.image.height):
+        ox, oy = layer.offset
+        lx, ly = x - ox, y - oy
+        if not (0 <= lx < layer.image.width and 0 <= ly < layer.image.height):
             return
         rgba = layer.image
-        target = rgba.getpixel((x, y))
+        target = rgba.getpixel((lx, ly))
         replacement = self.ctx.primary_color
         if target == replacement:
             return
-        ImageDraw.floodfill(rgba, (x, y), replacement, thresh=self.ctx.fill_tolerance)
+        ImageDraw.floodfill(rgba, (lx, ly), replacement, thresh=self.ctx.fill_tolerance)
 
 
 class LineTool(Tool):
@@ -879,6 +899,11 @@ class _SelectionToolBase(Tool):
         src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
         lr, lg, lb, la = src.split()
         lifted_alpha = ImageChops.multiply(la, layer_mask)
+        # If selection covers no opaque pixels (e.g. the user just deleted
+        # everything inside it), there's nothing to drag — let the caller
+        # fall through to its normal sample/marquee behavior.
+        if lifted_alpha.getextrema()[1] == 0:
+            return False
         lifted = Image.merge("RGBA", (lr, lg, lb, lifted_alpha))
 
         # Base layer: same pixels but with the selected region erased
@@ -895,6 +920,9 @@ class _SelectionToolBase(Tool):
         self._lift_base = base
         self._lift_image = lifted
         self._lift_layer = layer
+        # Composite at zero displacement so a click without drag leaves
+        # pixels visually unchanged instead of erasing the lifted region.
+        self._continue_move(x, y)
         return True
 
     def _continue_move(self, x: int, y: int) -> None:
@@ -1085,6 +1113,13 @@ class MagicWandTool(_SelectionToolBase):
     name = "Magic Wand"
     commit_on = None
 
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        # Last successful sample point so tolerance changes can re-run the
+        # flood without the user re-clicking. Cleared when the active layer
+        # changes or selection is cleared elsewhere.
+        self._seed: Optional[Tuple[int, "Layer", int, int, bool]] = None
+
     def press(self, layer: Layer, x: int, y: int) -> None:
         if self._begin_move_if_inside(layer, x, y):
             return
@@ -1093,13 +1128,42 @@ class MagicWandTool(_SelectionToolBase):
         lx, ly = x - ox, y - oy
         if not (0 <= lx < layer.image.width and 0 <= ly < layer.image.height):
             return
+        # Clicked pixel is fully transparent (e.g. just deleted): no
+        # content to wand. Clear any leftover selection so the user sees
+        # "nothing there" instead of a flood-fill of the empty region.
+        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+        if src.getpixel((lx, ly))[3] == 0:
+            if self.ctx.set_selection is not None:
+                self.ctx.set_selection(None)
+            self._seed = None
+            return
+        self._sample_and_commit(layer, lx, ly, additive_mode=(self.ctx.shift_held or self.ctx.alt_held))
+
+    def _sample_and_commit(
+        self,
+        layer: Layer,
+        lx: int,
+        ly: int,
+        additive_mode: bool,
+        ctrl_mode: Optional[bool] = None,
+    ) -> None:
+        ox, oy = layer.offset
         arr = np.asarray(layer.image.convert("RGBA"), dtype=np.int16)
         target = arr[ly, lx].astype(np.int16)
         tol = max(0, int(self.ctx.fill_tolerance))
-        diff = np.abs(arr - target).max(axis=-1)
-        match = (diff <= tol)
+        # RGB-only diff. Alpha differences shouldn't kill matches between
+        # equally-coloured pixels, but fully transparent pixels are not
+        # selectable when the user clicked a visible pixel — that's the
+        # "copies invisible pixels" bug. Reverse case (clicked transparent)
+        # only matches other fully-transparent pixels.
+        if target[3] == 0:
+            match = arr[..., 3] == 0
+        else:
+            diff = np.abs(arr[..., :3] - target[:3]).max(axis=-1)
+            match = (diff <= tol) & (arr[..., 3] > 0)
         h, w = match.shape
-        if self.ctx.ctrl_held:
+        use_ctrl = self.ctx.ctrl_held if ctrl_mode is None else ctrl_mode
+        if use_ctrl:
             # Select-similar: every pixel in the layer that matches the
             # target colour, regardless of contiguity. Useful for
             # grabbing all whitespace, all of one color across an image,
@@ -1123,8 +1187,33 @@ class MagicWandTool(_SelectionToolBase):
         canvas_mask = Image.new("L", (canvas_w, canvas_h), 0)
         layer_mask = Image.fromarray((visited * 255).astype(np.uint8), mode="L")
         canvas_mask.paste(layer_mask, (ox, oy))
-        combined = self._combine_with_current(canvas_mask, layer)
+        if additive_mode:
+            combined = self._combine_with_current(canvas_mask, layer)
+        else:
+            combined = canvas_mask
         self._commit_mask(combined)
+        # Remember seed so a live tolerance change can re-sample without
+        # the user clicking again. Stored *after* commit to avoid leaving
+        # a stale seed when sampling fails.
+        self._seed = (id(layer), layer, lx, ly, use_ctrl)
+
+    def reapply(self) -> None:
+        """Re-run the wand from the last sample point with current tolerance.
+
+        Called by the host when the tolerance slider/spinbox changes so the
+        selection updates live. No-op if no prior seed exists or the seed
+        layer is gone.
+        """
+        if self._seed is None:
+            return
+        _, layer, lx, ly, ctrl_mode = self._seed
+        if layer.image is None:
+            self._seed = None
+            return
+        if not (0 <= lx < layer.image.width and 0 <= ly < layer.image.height):
+            self._seed = None
+            return
+        self._sample_and_commit(layer, lx, ly, additive_mode=False, ctrl_mode=ctrl_mode)
 
     def move(self, layer: Layer, x: int, y: int) -> None:
         if self._move_mode:

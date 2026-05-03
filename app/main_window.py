@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageChops
 from PyQt6.QtCore import QBuffer, QIODevice, QSettings, Qt
 from PyQt6.QtGui import QAction, QIcon, QImage, QKeySequence
 from PyQt6.QtWidgets import (
@@ -36,7 +36,15 @@ from .history import History
 from .image_ops import place_on_canvas
 from .layer import Layer, LayerStack
 from .logger import get_logger
-from .plugin_loader import ActionEntry, FilterEntry, PluginRegistry, load_plugins, shutdown_plugins
+from .plugin_loader import (
+    ActionEntry,
+    FilterEntry,
+    PluginRegistry,
+    load_plugins,
+    purge_plugin_modules,
+    shutdown_plugins,
+    snapshot_plugin_files,
+)
 from .project import Project
 from .project_io import PROJECT_EXT, PROJECT_FILTER, load_project, save_project
 from .session import load_session, save_session
@@ -152,6 +160,7 @@ class MainWindow(QMainWindow):
         self.tool_ctx.set_selection = self._on_selection_changed
         self.tool_ctx.commit_action = self._on_action_committed
         self.tool_ctx.get_canvas_size = lambda: (self.current().stack.width, self.current().stack.height)
+        self.tool_ctx.on_tolerance_changed = self._tolerance_live_update
         self.tools = build_default_tools(self.tool_ctx)
         if "Picker" in self.tools:
             self.tools["Picker"].on_pick = lambda c: self.color_panel.set_primary(c)  # type: ignore[attr-defined]
@@ -222,12 +231,24 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
         # --- plugins ---
+        self._plugin_event_listeners: dict[str, list] = {}
+        self._plugin_dock_titles: list[str] = []
+        self._plugin_reload_in_progress = False
         self.plugins: PluginRegistry = load_plugins(
-            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas
+            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
         )
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
             self.tool_panel.add_tool_button(name)
+
+        # Hot reload watcher: poll plugin files; reload when the snapshot
+        # has been stable for one tick (debounces editor save bursts).
+        self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
+        self._plugin_pending_snapshot: Optional[dict] = None
+        self._plugin_watch_timer = QTimer(self)
+        self._plugin_watch_timer.setInterval(1000)
+        self._plugin_watch_timer.timeout.connect(self._poll_plugin_changes)
+        self._plugin_watch_timer.start()
 
         self._build_menus()
         self._refresh_tabs()
@@ -344,7 +365,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._act("Paste Into Current Layer", self._on_paste_into_current, "Ctrl+Shift+V"))
         edit_menu.addAction(self._act("Select All", self._on_select_all, "Ctrl+A"))
         edit_menu.addAction(self._act("Deselect", self._on_deselect, "Ctrl+D"))
-        edit_menu.addAction(self._act("Invert Selection", self._on_invert_selection, "Ctrl+Shift+I"))
+        edit_menu.addAction(self._act("Invert Selection", self._on_invert_selection, "Ctrl+I"))
         edit_menu.addAction(self._act("Transform Selection", self._on_transform_selection, "Ctrl+T"))
         edit_menu.addSeparator()
         edit_menu.addAction(self._act("Fill with Primary", self._on_fill_primary, "Alt+Backspace"))
@@ -416,31 +437,31 @@ class MainWindow(QMainWindow):
             placeholder.setEnabled(False)
             filter_menu.addAction(placeholder)
         else:
-            for name, entry in self.plugins.filters.items():
-                label = name + ("…" if entry.settings else "")
-                filter_menu.addAction(self._act(
-                    label, lambda _=False, n=name, e=entry: self._invoke_filter(n, e)
-                ))
+            self._populate_plugin_menu(
+                filter_menu, self.plugins.filters,
+                lambda n, e: (lambda _=False: self._invoke_filter(n, e)),
+            )
 
         plugins_menu = mb.addMenu("&Plugins")
-        if not self.plugins.actions and not self.plugins.plugins:
+        plugins_menu.addAction(self._act("Reload Plugins", self.reload_plugins, "Ctrl+Shift+R"))
+        plugins_menu.addSeparator()
+        # Only count plugins with at least one usable surface (action,
+        # filter, or tool); failed/empty plugins are hidden from the menu
+        # so the user only sees actionable entries (their errors are
+        # already in the plugin log + crash reports).
+        loaded_ok = [
+            p for p in self.plugins.plugins
+            if p.error is None and (p.actions or p.filters or p.tools)
+        ]
+        if not self.plugins.actions and not loaded_ok:
             placeholder = QAction("(no plugins loaded)", self)
             placeholder.setEnabled(False)
             plugins_menu.addAction(placeholder)
         else:
-            for name, entry in self.plugins.actions.items():
-                label = name + ("…" if entry.settings else "")
-                plugins_menu.addAction(self._act(
-                    label, lambda _=False, n=name, e=entry: self._invoke_action(n, e)
-                ))
-            plugins_menu.addSeparator()
-            for loaded in self.plugins.plugins:
-                label = f"{loaded.name}"
-                if loaded.error:
-                    label += f"  ❌  {loaded.error}"
-                act = QAction(label, self)
-                act.setEnabled(False)
-                plugins_menu.addAction(act)
+            self._populate_plugin_menu(
+                plugins_menu, self.plugins.actions,
+                lambda n, e: (lambda _=False: self._invoke_action(n, e)),
+            )
 
         help_menu = mb.addMenu("&Help")
         help_menu.addAction(self._act("About", self._on_about))
@@ -451,6 +472,27 @@ class MainWindow(QMainWindow):
             a.setShortcut(QKeySequence(shortcut))
         a.triggered.connect(slot)
         return a
+
+    def _populate_plugin_menu(self, menu, entries, make_slot) -> None:
+        """Add `entries` to `menu`, grouping by `entry.category` into submenus.
+
+        `entries` maps name → FilterEntry/ActionEntry. Entries with a
+        truthy `category` are grouped under a submenu of that label;
+        the rest stay at the top level. `make_slot(name, entry)` returns
+        the QAction-trigger callback.
+        """
+        submenus: dict[str, object] = {}
+        for name, entry in entries.items():
+            label = name + ("…" if entry.settings else "")
+            cat = getattr(entry, "category", None)
+            target = menu
+            if cat:
+                sub = submenus.get(cat)
+                if sub is None:
+                    sub = menu.addMenu(cat)
+                    submenus[cat] = sub
+                target = sub
+            target.addAction(self._act(label, make_slot(name, entry)))
 
     def _set_zoom(self, z: float) -> None:
         self.canvas.zoom = z
@@ -505,6 +547,8 @@ class MainWindow(QMainWindow):
         self.active_project = idx
         self._bind_current()
         self._refresh_tabs()
+        if hasattr(self, "_plugin_event_listeners"):
+            self.emit_event("project_changed", idx)
 
     def _close_project(self, idx: int) -> None:
         if not (0 <= idx < len(self.projects)):
@@ -580,6 +624,8 @@ class MainWindow(QMainWindow):
         self.layer_panel.refresh()
         self._refresh_tabs()
         self._refresh_history_panel()
+        if hasattr(self, "_plugin_event_listeners"):
+            self.emit_event("layer_changed", self.current().stack.active_index)
 
     def _apply_snapshot_stack(self, new_stack: LayerStack) -> None:
         proj = self.current()
@@ -620,6 +666,11 @@ class MainWindow(QMainWindow):
         prev = self.canvas.tool
         if prev is self.tools.get("Text") and name != "Text":
             self._on_text_commit()
+        # Photoshop-style: picking Move while a selection is active routes
+        # to Sel Transform so the user drags the masked pixels rather than
+        # the whole layer.
+        if name == "Move" and self.current().selection is not None and "Sel Transform" in self.tools:
+            name = "Sel Transform"
         tool = self.tools.get(name)
         if tool is None:
             return
@@ -647,6 +698,8 @@ class MainWindow(QMainWindow):
             )
         self.canvas.set_tool(tool)
         self.tool_panel.set_active_tool(name)
+        if hasattr(self, "_plugin_event_listeners"):
+            self.emit_event("tool_changed", name)
         self.statusBar().showMessage(f"Tool: {name}")
         self.log.info("Tool selected: %s", name)
 
@@ -1074,6 +1127,32 @@ class MainWindow(QMainWindow):
     def _on_fill_secondary(self) -> None:
         self._fill_selection_with(self.tool_ctx.secondary_color)
 
+    def _erase_selection(self) -> None:
+        proj = self.current()
+        layer = proj.stack.active
+        if layer is None:
+            return
+        if proj.selection is None:
+            return
+        cw, ch = proj.stack.width, proj.stack.height
+        sel_mask = proj.selection.mask
+        if sel_mask.size != (cw, ch):
+            full = Image.new("L", (cw, ch), 0)
+            full.paste(sel_mask, (0, 0))
+            sel_mask = full
+        ox, oy = layer.offset
+        layer_mask = Image.new("L", layer.image.size, 0)
+        layer_mask.paste(sel_mask, (-ox, -oy))
+        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+        r, g, b, a = src.split()
+        keep = layer_mask.point(lambda v: 255 - v)
+        new_a = ImageChops.multiply(a, keep)
+        layer.image = Image.merge("RGBA", (r, g, b, new_a))
+        proj.stack.invalidate_cache()
+        self.canvas.refresh()
+        self._mark_dirty()
+        self._on_action_committed("Erase selection")
+
     # --- image transforms ---
 
     def _on_resize_image(self) -> None:
@@ -1286,17 +1365,53 @@ class MainWindow(QMainWindow):
         if layer is None:
             QMessageBox.information(self, "No active layer", "Select a layer first.")
             return
-        kwargs = self._prompt_settings(name, entry)
-        if kwargs is None:
-            return
+
+        original = layer.image.copy()
+
+        # Live preview: re-run filter on a copy of the original whenever the
+        # user adjusts a setting, so they see the effect on the canvas
+        # before committing. Reverts to `original` if the dialog is
+        # cancelled.
+        def preview(values: dict) -> None:
+            try:
+                new_img = entry.fn(original.copy(), **values)
+            except Exception:
+                return
+            if new_img is None or not isinstance(new_img, Image.Image):
+                return
+            layer.image = new_img
+            self.current().stack.invalidate_cache()
+            self.canvas.refresh()
+
+        if entry.settings:
+            dlg = PluginSettingsDialog(name, entry.settings, self, preview_callback=preview)
+            accepted = dlg.exec() == dlg.DialogCode.Accepted
+            if not accepted:
+                layer.image = original
+                self.current().stack.invalidate_cache()
+                self.canvas.refresh()
+                return
+            kwargs = dlg.values()
+        else:
+            kwargs = {}
+
         try:
-            new_img = entry.fn(layer.image.copy(), **kwargs)
+            new_img = entry.fn(original.copy(), **kwargs)
         except Exception as e:
+            layer.image = original
+            self.current().stack.invalidate_cache()
+            self.canvas.refresh()
             QMessageBox.critical(self, "Filter failed", str(e))
             return
         if new_img is None or not isinstance(new_img, Image.Image):
+            layer.image = original
+            self.current().stack.invalidate_cache()
+            self.canvas.refresh()
             QMessageBox.warning(self, "Filter", "Filter returned no image.")
             return
+        # `replace_image` records this as a discrete edit (so undo restores
+        # the pre-filter image, not the in-flight preview state).
+        layer.image = original
         layer.replace_image(new_img)
         self.current().stack.invalidate_cache()
         self.canvas.refresh()
@@ -1318,10 +1433,25 @@ class MainWindow(QMainWindow):
 
     # --- selection / clipboard ---
 
+    def _tolerance_live_update(self) -> None:
+        """Re-run the magic wand with the new tolerance from its last seed."""
+        tool = self.tools.get("Magic Wand") if hasattr(self, "tools") else None
+        if tool is None:
+            return
+        reapply = getattr(tool, "reapply", None)
+        if reapply is None:
+            return
+        try:
+            reapply()
+        except Exception:
+            pass
+
     def _on_selection_changed(self, sel) -> None:
         proj = self.current()
         proj.selection = sel
         self.canvas.refresh()
+        if hasattr(self, "_plugin_event_listeners"):
+            self.emit_event("selection_changed")
 
     def _on_select_all(self) -> None:
         from .project import Selection
@@ -1542,19 +1672,33 @@ class MainWindow(QMainWindow):
                 resized = (new_w, new_h) != (cw, ch)
                 if resized:
                     proj.stack.resize_canvas(new_w, new_h)
+                # Center the pasted pixels in the (possibly enlarged) canvas
+                # so the user sees their image in the middle, not the
+                # top-left corner.
                 new_arr = np.zeros((new_h, new_w, 4), dtype=np.uint8)
-                new_arr[:ih_a, :iw_a] = img_arr
+                ox = max(0, (new_w - iw_a) // 2)
+                oy = max(0, (new_h - ih_a) // 2)
+                new_arr[oy:oy + ih_a, ox:ox + iw_a] = img_arr
                 proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
                 if resized:
                     self.canvas.fit_to_window()
                 action_desc = f"Paste ({source_label}) — extend canvas to {new_w}×{new_h}"
             elif mode == "anchor":
-                proj.stack.add_layer(Layer(name=source_label, image=img, offset=(0, 0)))
+                ox = (cw - iw) // 2
+                oy = (ch - ih) // 2
+                proj.stack.add_layer(Layer(name=source_label, image=img, offset=(ox, oy)))
                 action_desc = f"Paste ({source_label}) — anchor full image"
-            else:  # crop
+            else:  # crop — fit pasted pixels into canvas, centered
                 new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
                 ih_c = min(ih_a, ch); iw_c = min(iw_a, cw)
-                new_arr[:ih_c, :iw_c] = img_arr[:ih_c, :iw_c]
+                # Source crop offset: pull from the center of the source
+                # image so we keep the visually-important middle.
+                src_x = max(0, (iw_a - iw_c) // 2)
+                src_y = max(0, (ih_a - ih_c) // 2)
+                # Destination centered on canvas.
+                dst_x = max(0, (cw - iw_c) // 2)
+                dst_y = max(0, (ch - ih_c) // 2)
+                new_arr[dst_y:dst_y + ih_c, dst_x:dst_x + iw_c] = img_arr[src_y:src_y + ih_c, src_x:src_x + iw_c]
                 proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
                 action_desc = f"Paste ({source_label}) — crop to canvas"
 
@@ -1641,6 +1785,10 @@ class MainWindow(QMainWindow):
         if "Transform" not in self.tools:
             return
         self._on_tool_selected("Transform")
+        # Pull keyboard focus to the canvas so Enter immediately commits
+        # the transform (otherwise focus may sit on a panel/spinbox and
+        # Return never reaches MainWindow.keyPressEvent).
+        self.canvas.setFocus()
 
     def _ask_paste_mode(self, img_size: tuple[int, int],
                         canvas_size: tuple[int, int]) -> Optional[str]:
@@ -1738,6 +1886,11 @@ class MainWindow(QMainWindow):
             self._confirm_selection()
             event.accept()
             return
+        if event.key() in (_Qt.Key.Key_Delete, _Qt.Key.Key_Backspace):
+            if self.current().selection is not None:
+                self._erase_selection()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def _confirm_selection(self) -> None:
@@ -1758,9 +1911,21 @@ class MainWindow(QMainWindow):
                 label = None
             if label:
                 self._on_action_committed(label)
-        # 2) Transform tool has no commit() but its handles linger as a
-        #    canvas overlay until another tool is picked. Switch back to
-        #    Brush so Enter cleanly exits the post-paste transform.
+        # 2a) Transform tool: bake the current bbox into a canvas-sized
+        #     layer. Without this, a pasted image whose layer extends
+        #     beyond the canvas (or sits at a non-zero offset) leaves
+        #     downstream tools — box brush, fill, etc. — misaligned
+        #     against the visible pixels.
+        if active_name == "Transform":
+            layer = proj.stack.active
+            if layer is not None:
+                self._crop_layer_to_canvas(layer, proj.stack.width, proj.stack.height)
+                proj.stack.invalidate_cache()
+                self.canvas.refresh()
+                self._on_action_committed("Transform: apply")
+        # 2b) Transform tool has no commit() but its handles linger as a
+        #     canvas overlay until another tool is picked. Switch back
+        #     to Brush so Enter cleanly exits the post-paste transform.
         if active_name in ("Transform", "Sel Transform", "Move") and "Brush" in self.tools:
             self._on_tool_selected("Brush")
         # 3) Drop the marching-ants selection.
@@ -1768,6 +1933,192 @@ class MainWindow(QMainWindow):
             proj.selection = None
             self.canvas.refresh()
             self.statusBar().showMessage("Selection committed")
+
+    def _crop_layer_to_canvas(self, layer, cw: int, ch: int) -> None:
+        """Bake layer.image+offset into a canvas-sized RGBA buffer at (0,0).
+
+        Pixels outside the canvas are dropped.
+        """
+        ox, oy = layer.offset
+        lw, lh = layer.image.size
+        x0 = max(0, ox); y0 = max(0, oy)
+        x1 = min(cw, ox + lw); y1 = min(ch, oy + lh)
+        new_img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        if x1 > x0 and y1 > y0:
+            src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+            crop_box = (x0 - ox, y0 - oy, x1 - ox, y1 - oy)
+            new_img.paste(src.crop(crop_box), (x0, y0))
+        layer.image = new_img
+        layer.offset = (0, 0)
+
+    # --- plugin host API ---
+    # Implements `plugin_api.PluginHost`. All methods operate on the
+    # currently-active project so plugins behave correctly across tab
+    # switches.
+
+    def canvas_size(self) -> tuple[int, int]:
+        s = self.current().stack
+        return (s.width, s.height)
+
+    def resize_canvas(self, width: int, height: int) -> None:
+        self.current().stack.resize_canvas(width, height)
+        self.canvas.refresh()
+        self.emit_event("canvas_resized", width, height)
+
+    def layers(self) -> list:
+        return list(self.current().stack.layers)
+
+    def active_layer(self):
+        return self.current().stack.active
+
+    def active_index(self) -> int:
+        return self.current().stack.active_index
+
+    def set_active(self, index: int) -> None:
+        self.current().stack.set_active(index)
+        self.canvas.refresh()
+        self.emit_event("active_changed", index)
+
+    def add_layer(self, image=None, name=None):
+        from .layer import Layer as _Layer
+        stack = self.current().stack
+        if image is None:
+            layer = stack.add_layer(name=name)
+        else:
+            layer = stack.add_layer(_Layer(name=name or f"Layer {len(stack)+1}", image=image.convert("RGBA")))
+        self.canvas.refresh()
+        self.emit_event("layers_reordered")
+        return layer
+
+    def remove_layer(self, index: int):
+        stack = self.current().stack
+        if not (0 <= index < len(stack)):
+            return None
+        stack.set_active(index)
+        layer = stack.remove_active()
+        self.canvas.refresh()
+        self.emit_event("layers_reordered")
+        return layer
+
+    def move_layer(self, src: int, dst: int) -> None:
+        self.current().stack.move(src, dst)
+        self.canvas.refresh()
+        self.emit_event("layers_reordered")
+
+    def get_layer_image(self, index: int):
+        stack = self.current().stack
+        if 0 <= index < len(stack):
+            return stack.layers[index].image
+        return None
+
+    def set_layer_image(self, index: int, image) -> None:
+        stack = self.current().stack
+        if 0 <= index < len(stack):
+            stack.layers[index].replace_image(image)
+            stack.invalidate_cache()
+            self.canvas.refresh()
+            self.emit_event("layer_changed", index)
+
+    def composite(self):
+        return self.current().stack.composite()
+
+    def canvas_refresh(self) -> None:
+        self.current().stack.invalidate_cache()
+        self.canvas.refresh()
+        self.emit_event("layer_changed", self.current().stack.active_index)
+
+    def get_selection_mask(self):
+        sel = self.current().selection
+        return sel.mask if sel is not None else None
+
+    def set_selection_mask(self, mask) -> None:
+        from .project import Selection
+        if mask is None:
+            self.current().selection = None
+        else:
+            self.current().selection = Selection.from_mask(mask)
+        self.canvas.refresh()
+        self.emit_event("selection_changed")
+
+    def commit_history(self, label: str) -> None:
+        self.current().commit(label)
+        self._refresh_history_panel()
+
+    # `undo`/`redo` already exist as `_on_undo`/`_on_redo`; expose under host names.
+    def undo(self) -> None:  # type: ignore[override]
+        self._on_undo()
+
+    def redo(self) -> None:  # type: ignore[override]
+        self._on_redo()
+
+    def on_event(self, event: str, fn) -> None:
+        self._plugin_event_listeners.setdefault(event, []).append(fn)
+
+    def off_event(self, event: str, fn) -> None:
+        listeners = self._plugin_event_listeners.get(event)
+        if listeners and fn in listeners:
+            listeners.remove(fn)
+
+    def emit_event(self, event: str, *args, **kwargs) -> None:
+        for fn in list(self._plugin_event_listeners.get(event, [])):
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                self.log.exception("Plugin listener for %s failed", event)
+
+    def register_panel(self, title: str, widget, area: str = "right") -> None:
+        area_map = {
+            "left": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "right": Qt.DockWidgetArea.RightDockWidgetArea,
+            "top": Qt.DockWidgetArea.TopDockWidgetArea,
+            "bottom": Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+        self._add_dock(title, widget, area_map.get(area, Qt.DockWidgetArea.RightDockWidgetArea))
+        if title not in self._plugin_dock_titles:
+            self._plugin_dock_titles.append(title)
+
+    def status(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+
+    def progress(self, value, message: str = "") -> None:
+        if value is None:
+            self.statusBar().clearMessage()
+            return
+        pct = max(0, min(100, int(round(float(value) * 100))))
+        self.statusBar().showMessage(f"{message} {pct}%" if message else f"{pct}%")
+
+    def config_get(self, plugin_name: str, key: str, default=None):
+        v = self._settings.value(f"plugins/{plugin_name}/{key}", default)
+        return v if v is not None else default
+
+    def config_set(self, plugin_name: str, key: str, value) -> None:
+        self._settings.setValue(f"plugins/{plugin_name}/{key}", value)
+
+    def clipboard_get_image(self):
+        cb = QApplication.clipboard()
+        qimg = cb.image()
+        if qimg.isNull():
+            return None
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        qimg.save(buf, "PNG")
+        from io import BytesIO
+        return Image.open(BytesIO(bytes(buf.data()))).convert("RGBA")
+
+    def clipboard_set_image(self, image) -> None:
+        from io import BytesIO
+        buf = BytesIO()
+        image.convert("RGBA").save(buf, format="PNG")
+        qimg = QImage.fromData(buf.getvalue(), "PNG")
+        QApplication.clipboard().setImage(qimg)
+
+    def ask_open_file(self, filters: str = "All Files (*.*)"):
+        path, _ = QFileDialog.getOpenFileName(self, "Open", "", filters)
+        return Path(path) if path else None
+
+    def ask_save_file(self, filters: str = "All Files (*.*)"):
+        path, _ = QFileDialog.getSaveFileName(self, "Save", "", filters)
+        return Path(path) if path else None
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -1778,6 +2129,10 @@ class MainWindow(QMainWindow):
         self._schedule_layout_save()
 
     def closeEvent(self, event):  # noqa: N802
+        try:
+            self._plugin_watch_timer.stop()
+        except Exception:
+            pass
         try:
             self._save_layout()
         except Exception:
@@ -1790,3 +2145,82 @@ class MainWindow(QMainWindow):
             shutdown_plugins(self.plugins)
         finally:
             super().closeEvent(event)
+
+    # --- plugin hot reload ---
+
+    def _poll_plugin_changes(self) -> None:
+        if self._plugin_reload_in_progress:
+            return
+        snap = snapshot_plugin_files(PLUGINS_DIR)
+        if snap == self._plugin_snapshot:
+            self._plugin_pending_snapshot = None
+            return
+        # First tick that sees a diff: stash it and wait one more tick to
+        # confirm the snapshot has settled (editors save in bursts).
+        if self._plugin_pending_snapshot != snap:
+            self._plugin_pending_snapshot = snap
+            return
+        self._plugin_pending_snapshot = None
+        self._plugin_snapshot = snap
+        self.reload_plugins()
+
+    def reload_plugins(self) -> None:
+        if self._plugin_reload_in_progress:
+            return
+        self._plugin_reload_in_progress = True
+        self.statusBar().showMessage("Reloading plugins…")
+        try:
+            # Drop the active tool if it came from a plugin so we don't
+            # paint with a dangling reference after purge.
+            current_tool = getattr(self.canvas, "tool", None)
+            if current_tool is not None and current_tool in self.plugins.tools.values():
+                self.canvas.set_tool(self.tools.get("Brush"))
+
+            for name in list(self.plugins.tools.keys()):
+                self.tools.pop(name, None)
+                try:
+                    self.tool_panel.remove_tool_button(name)
+                except Exception:
+                    self.log.exception("remove_tool_button(%s) failed", name)
+
+            for title in list(self._plugin_dock_titles):
+                dock = self._docks.pop(title, None)
+                self._initial_dock_area.pop(title, None)
+                if dock is not None:
+                    try:
+                        self.removeDockWidget(dock)
+                        dock.setParent(None)
+                        dock.deleteLater()
+                    except Exception:
+                        self.log.exception("Removing plugin dock %s failed", title)
+            self._plugin_dock_titles.clear()
+
+            self._plugin_event_listeners.clear()
+
+            try:
+                shutdown_plugins(self.plugins)
+            except Exception:
+                self.log.exception("shutdown_plugins failed")
+
+            removed = purge_plugin_modules()
+            self.log.info("Purged %d plugin module(s) from sys.modules", removed)
+
+            self.menuBar().clear()
+
+            self.plugins = load_plugins(
+                PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
+            )
+            for name, tool in self.plugins.tools.items():
+                self.tools[name] = tool
+                self.tool_panel.add_tool_button(name)
+
+            self._build_menus()
+            # Refresh snapshot: a reload triggered by edit means the new
+            # mtimes are now the baseline.
+            self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
+            self.statusBar().showMessage(
+                f"Plugins reloaded: {len([p for p in self.plugins.plugins if p.plugin is not None])} ok",
+                3000,
+            )
+        finally:
+            self._plugin_reload_in_progress = False

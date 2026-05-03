@@ -22,6 +22,7 @@ class NormalMapPlugin(Plugin):
                 Setting(name="source", type="choice", default="luminance",
                         choices=["luminance", "alpha"], label="Height source"),
             ],
+            category="Generators",
         )
 
     def apply(self, image: Image.Image, *,

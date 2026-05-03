@@ -18,6 +18,7 @@ class PosterizePlugin(Plugin):
                 Setting(name="levels", type="int", default=4, min=2, max=32, step=1, label="Levels per channel"),
                 Setting(name="include_alpha", type="bool", default=False, label="Quantize alpha"),
             ],
+            category="Color",
         )
         ctx.logger.info("Posterize registered")
 

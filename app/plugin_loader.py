@@ -21,7 +21,7 @@ from typing import Callable, Optional
 from PIL import Image
 
 from .logger import get_logger, get_plugin_logger, write_crash_report
-from .plugin_api import Plugin, PluginAction, PluginContext, PluginFilter, Setting
+from .plugin_api import Plugin, PluginAction, PluginContext, PluginFilter, PluginHost, Setting
 from .tools import Tool, ToolContext
 
 log = get_logger("plugins")
@@ -31,12 +31,14 @@ log = get_logger("plugins")
 class FilterEntry:
     fn: PluginFilter
     settings: list[Setting] = field(default_factory=list)
+    category: Optional[str] = None  # submenu label; None = top-level
 
 
 @dataclass
 class ActionEntry:
     fn: PluginAction
     settings: list[Setting] = field(default_factory=list)
+    category: Optional[str] = None  # submenu label; None = top-level
 
 
 @dataclass
@@ -116,6 +118,7 @@ def load_plugins(
     layer_stack,
     tool_context: ToolContext,
     canvas,
+    host: Optional[PluginHost] = None,
 ) -> PluginRegistry:
     registry = PluginRegistry()
     files = discover_plugin_files(plugins_dir)
@@ -164,26 +167,34 @@ def load_plugins(
                 _pl.info("Registered tool %s", name)
 
             def _register_filter(name: str, fn: PluginFilter, settings: Optional[list[Setting]] = None,
+                                 category: Optional[str] = None,
                                  _l=loaded, _pl=plugin_logger):
                 wrapped = _wrap_filter(_pl, fn)
-                entry = FilterEntry(fn=wrapped, settings=list(settings or []))
+                entry = FilterEntry(fn=wrapped, settings=list(settings or []), category=category)
                 _l.filters[name] = entry
                 registry.filters[name] = entry
-                _pl.info("Registered filter %s%s", name, " with settings" if entry.settings else "")
+                _pl.info("Registered filter %s%s%s", name,
+                         f" in {category!r}" if category else "",
+                         " with settings" if entry.settings else "")
 
             def _register_action(name: str, fn: PluginAction, settings: Optional[list[Setting]] = None,
+                                 category: Optional[str] = None,
                                  _l=loaded, _pl=plugin_logger):
                 wrapped = _wrap_action(_pl, fn)
-                entry = ActionEntry(fn=wrapped, settings=list(settings or []))
+                entry = ActionEntry(fn=wrapped, settings=list(settings or []), category=category)
                 _l.actions[name] = entry
                 registry.actions[name] = entry
-                _pl.info("Registered action %s%s", name, " with settings" if entry.settings else "")
+                _pl.info("Registered action %s%s%s", name,
+                         f" in {category!r}" if category else "",
+                         " with settings" if entry.settings else "")
 
             ctx = PluginContext(
                 layer_stack=layer_stack,
                 tool_context=tool_context,
                 canvas=canvas,
                 logger=plugin_logger,
+                host=host,  # type: ignore[arg-type]
+                plugin_name=loaded.name,
                 register_tool=_register_tool,
                 register_filter=_register_filter,
                 register_action=_register_action,
@@ -209,3 +220,34 @@ def shutdown_plugins(registry: PluginRegistry) -> None:
             continue
         plugin_logger = get_plugin_logger(loaded.name)
         _safe_call(plugin_logger, "shutdown", loaded.plugin.shutdown)
+
+
+PLUGIN_MODULE_PREFIX = "layered_plugin_"
+
+
+def purge_plugin_modules() -> int:
+    """Drop all plugin-namespaced entries from sys.modules so the next
+    load re-executes their source. Returns the number of entries removed.
+    Submodules of plugin packages share the prefix and are dropped too.
+    """
+    stale = [k for k in sys.modules if k.startswith(PLUGIN_MODULE_PREFIX)]
+    for k in stale:
+        sys.modules.pop(k, None)
+    return len(stale)
+
+
+def snapshot_plugin_files(plugins_dir: Path) -> dict[str, tuple[float, int]]:
+    """Return {path: (mtime, size)} for every .py under `plugins_dir`.
+    Used to detect changes between watcher ticks. Recursive so package
+    internals (helpers.py inside a plugin package) trigger reloads too.
+    """
+    snap: dict[str, tuple[float, int]] = {}
+    if not plugins_dir.exists():
+        return snap
+    for p in plugins_dir.rglob("*.py"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        snap[str(p)] = (st.st_mtime, st.st_size)
+    return snap

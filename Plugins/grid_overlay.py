@@ -6,7 +6,7 @@ class GridOverlayPlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_action("Toggle Grid Overlay (Stub)", self.toggle)
+        ctx.register_action("Toggle Grid Overlay (Stub)", self.toggle, category="Utilities")
 
         self.enabled = False
 

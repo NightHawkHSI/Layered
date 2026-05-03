@@ -20,6 +20,7 @@ class ColorReplacePlugin(Plugin):
                 Setting(name="tolerance", type="int", default=24, min=0, max=255, step=1, label="Tolerance"),
                 Setting(name="match_alpha", type="bool", default=False, label="Match alpha too"),
             ],
+            category="Color",
         )
         ctx.logger.info("Color Replace registered")
 

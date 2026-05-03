@@ -20,6 +20,7 @@ class DropShadowPlugin(Plugin):
                 Setting(name="opacity", type="float", default=0.6, min=0.0, max=1.0, step=0.05, label="Opacity"),
                 Setting(name="color", type="color", default=(0, 0, 0, 255), label="Shadow color"),
             ],
+            category="Effects",
         )
         ctx.logger.info("Drop Shadow registered")
 

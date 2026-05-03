@@ -35,6 +35,11 @@ class Canvas(QWidget):
         self.setMouseTracking(True)
         self.setMinimumSize(400, 300)
         self.setAcceptDrops(True)
+        # Click-to-focus so Enter / Esc reach MainWindow.keyPressEvent
+        # instead of being consumed by a still-focused QSpinBox/QLineEdit
+        # (e.g. tolerance spin) — without that, Enter never confirms an
+        # in-progress transform after the user typed in a settings field.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.layer_stack = layer_stack
         self.tool: Optional[Tool] = None
         self.zoom: float = 1.0
@@ -43,12 +48,16 @@ class Canvas(QWidget):
         self._cached_pixmap: Optional[QPixmap] = None
         self._dirty = True
         self._panning = False
+        self._right_active = False
         self.selection_provider = None  # callable -> Optional[Selection]
         # Cache of canvas-space selection edge segments keyed by the
         # mask object id + size, so repaint doesn't re-scan the whole
         # mask every frame. Each entry is a list of (x0, y0, x1, y1)
         # in canvas pixel coords representing a single 1-px edge.
         self._sel_edge_cache: tuple[Optional[int], Optional[tuple[int, int]], list[tuple[int, int, int, int]]] = (None, None, [])
+        # Cached translucent fill pixmap matching the current selection
+        # mask, keyed by mask id + size. Avoids rebuilding each frame.
+        self._sel_fill_cache: tuple[Optional[int], Optional[tuple[int, int]], Optional[QPixmap]] = (None, None, None)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
     # --- public API ---
@@ -118,8 +127,20 @@ class Canvas(QWidget):
         cb = 16
         painter.save()
         painter.setClipRect(target)
-        for cy in range(int(target.top()), int(target.bottom()) + cb, cb):
-            for cx in range(int(target.left()), int(target.right()) + cb, cb):
+        # Clip the checker iteration to the visible viewport ∩ target. Without
+        # this, zooming in ~10× on a 2k canvas iterated ~1.5M cells per
+        # repaint and tanked frame rate.
+        view_rect = self.rect()
+        vx0 = max(int(target.left()), view_rect.left())
+        vy0 = max(int(target.top()), view_rect.top())
+        vx1 = min(int(target.right()) + cb, view_rect.right() + cb)
+        vy1 = min(int(target.bottom()) + cb, view_rect.bottom() + cb)
+        # Snap start to the same grid as the unbounded loop so colour parity
+        # matches across pans.
+        sx = int(target.left()) + ((vx0 - int(target.left())) // cb) * cb
+        sy = int(target.top()) + ((vy0 - int(target.top())) // cb) * cb
+        for cy in range(sy, vy1, cb):
+            for cx in range(sx, vx1, cb):
                 color = QColor(60, 60, 60) if ((cx // cb + cy // cb) % 2) else QColor(80, 80, 80)
                 painter.fillRect(cx, cy, cb, cb, color)
         painter.restore()
@@ -131,13 +152,15 @@ class Canvas(QWidget):
 
         # Selection outline — traces the actual mask boundary, so a
         # circular magic-wand selection paints a circle of marching
-        # ants instead of the bbox rectangle.
+        # ants instead of the bbox rectangle. A translucent blue fill
+        # underneath makes the selected region obvious at a glance.
         if self.selection_provider is not None:
             try:
                 sel = self.selection_provider()
             except Exception:
                 sel = None
             if sel is not None and getattr(sel, "mask", None) is not None:
+                self._paint_selection_highlight(painter, sel.mask, target)
                 segs = self._selection_edges(sel.mask)
                 if segs:
                     pen = QPen(QColor(255, 255, 255, 220), 1, Qt.PenStyle.DashLine)
@@ -220,6 +243,31 @@ class Canvas(QWidget):
         self._sel_edge_cache = (id(mask), mask.size, segs)
         return segs
 
+    def _paint_selection_highlight(self, painter: QPainter, mask, target: QRectF) -> None:
+        """Draw a translucent blue overlay on the selected region."""
+        cache_id, cache_size, cache_pix = self._sel_fill_cache
+        if cache_id == id(mask) and cache_size == mask.size:
+            pix = cache_pix
+        else:
+            try:
+                arr = np.asarray(mask.convert("L") if mask.mode != "L" else mask, dtype=np.uint8)
+            except Exception:
+                return
+            if not arr.any():
+                self._sel_fill_cache = (id(mask), mask.size, None)
+                return
+            h, w = arr.shape
+            rgba = np.zeros((h, w, 4), dtype=np.uint8)
+            rgba[..., 0] = 80   # R
+            rgba[..., 1] = 140  # G
+            rgba[..., 2] = 255  # B
+            rgba[..., 3] = (arr.astype(np.uint16) * 90 // 255).astype(np.uint8)
+            qimg = QImage(rgba.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+            pix = QPixmap.fromImage(qimg)
+            self._sel_fill_cache = (id(mask), mask.size, pix)
+        if pix is not None:
+            painter.drawPixmap(target, pix, QRectF(pix.rect()))
+
     def canvas_to_screen(self, cx: float, cy: float) -> tuple[float, float]:
         scaled_w = int(self.layer_stack.width * self.zoom)
         scaled_h = int(self.layer_stack.height * self.zoom)
@@ -243,16 +291,25 @@ class Canvas(QWidget):
         except Exception:
             pass
 
+    def _swap_tool_colors(self):
+        ctx = getattr(self.tool, "ctx", None)
+        if ctx is None:
+            return
+        ctx.primary_color, ctx.secondary_color = ctx.secondary_color, ctx.primary_color
+
     def mousePressEvent(self, e):  # noqa: N802
         if e.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._drag_origin = e.position().toPoint() - self._pan
             self._auto_fit = False
             return
-        if e.button() != Qt.MouseButton.LeftButton:
-            return  # ignore right-click and others; tools only fire on left
+        if e.button() not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            return
         if self.tool is None or self.layer_stack.active is None:
             return
+        if e.button() == Qt.MouseButton.RightButton:
+            self._right_active = True
+            self._swap_tool_colors()
         self._update_modifiers(e)
         cx, cy = self._to_canvas_coords(e.position().toPoint())
         self.tool.press(self.layer_stack.active, cx, cy)
@@ -268,7 +325,7 @@ class Canvas(QWidget):
             return
         if self.tool is None or self.layer_stack.active is None:
             return
-        if e.buttons() & Qt.MouseButton.LeftButton:
+        if e.buttons() & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton):
             self._update_modifiers(e)
             cx, cy = self._to_canvas_coords(e.position().toPoint())
             self.tool.move(self.layer_stack.active, cx, cy)
@@ -279,7 +336,7 @@ class Canvas(QWidget):
         if e.button() == Qt.MouseButton.MiddleButton:
             self._panning = False
             return
-        if e.button() != Qt.MouseButton.LeftButton:
+        if e.button() not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
             return
         if self.tool is None or self.layer_stack.active is None:
             return
@@ -290,6 +347,9 @@ class Canvas(QWidget):
         self.layer_changed.emit()
         if getattr(self.tool, "commit_on", "release") == "release":
             self.action_committed.emit(self.tool.name)
+        if e.button() == Qt.MouseButton.RightButton and self._right_active:
+            self._swap_tool_colors()
+            self._right_active = False
 
     def wheelEvent(self, e):  # noqa: N802
         delta = e.angleDelta().y()
@@ -302,13 +362,13 @@ class Canvas(QWidget):
             self.update()
             return
         if mods & Qt.KeyboardModifier.ControlModifier:
-            # Vertical pan.
-            self._pan = QPoint(self._pan.x(), self._pan.y() + step)
+            factor = 1.1 if delta > 0 else (1 / 1.1)
+            self.zoom = max(0.05, min(32.0, self.zoom * factor))
             self._auto_fit = False
             self.update()
             return
-        factor = 1.1 if delta > 0 else (1 / 1.1)
-        self.zoom = max(0.05, min(32.0, self.zoom * factor))
+        # Vertical pan (default).
+        self._pan = QPoint(self._pan.x(), self._pan.y() + step)
         self._auto_fit = False
         self.update()
 

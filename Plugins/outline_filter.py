@@ -24,6 +24,7 @@ class OutlineFilterPlugin(Plugin):
                     label="Placement",
                 ),
             ],
+            category="Effects",
         )
         ctx.logger.info("Configurable Outline plugin loaded")
 

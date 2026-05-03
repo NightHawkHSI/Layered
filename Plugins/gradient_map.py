@@ -19,6 +19,7 @@ class GradientMapPlugin(Plugin):
                 Setting(name="light", type="color", default=(255, 220, 120, 255), label="Light color"),
                 Setting(name="preserve_alpha", type="bool", default=True, label="Preserve alpha"),
             ],
+            category="Color",
         )
         ctx.logger.info("Gradient Map registered")
 

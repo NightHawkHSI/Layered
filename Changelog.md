@@ -1,5 +1,131 @@
 # Changelog
 
+## 2026-05-02 (round 30) — 6 updates
+
+### Added
+1. **Filters / Plugins menus support submenus.** `register_filter` and
+   `register_action` accept a new `category=` kwarg; entries with the
+   same category collapse into a shared submenu. Built-in plugins are
+   pre-grouped: **Color** (Grayscale, Invert, Brightness/Contrast,
+   Posterize, Gradient Map, Color Replace), **Effects** (Outline,
+   Sharpen, Glow/Bloom, Drop Shadow), **Generators** (Make Tileable,
+   Normal Map, Pixel Art Resize, Remove Background), **Utilities**
+   (Flip H/V, Crop to Center, Toggle Grid). Failed plugins are now
+   hidden from the menu (still in the plugin log + `MainWindow.plugins`)
+   so users only see actionable entries
+   (`app/plugin_loader.py`, `app/main_window.py:_populate_plugin_menu`,
+   `docs/PLUGIN_API.md`).
+
+### Fixed
+2. **Delete / Backspace now erases the selected pixels.**
+   `MainWindow.keyPressEvent` routes `Key_Delete` / `Key_Backspace` to
+   a new `_erase_selection()` that zeroes alpha under the selection
+   mask (offset-aware) and snapshots history as "Erase selection".
+3. **Enter wasn't applying the post-paste transform when focus stayed
+   on a side panel.** `_activate_transform_tool` now calls
+   `self.canvas.setFocus()` so Return immediately bubbles to
+   `MainWindow.keyPressEvent` and `_confirm_selection` flushes the
+   transform.
+4. **Move tool grabbed the whole layer when a selection was active.**
+   `_on_tool_selected("Move")` now redirects to "Sel Transform" while a
+   selection exists, so the lifted pixels translate with the cursor
+   instead of dragging the entire layer offset.
+5. **Brush / eraser painted at the wrong spot on layers with a
+   non-zero offset (e.g. clipboard pastes).** `_stamp_color` and
+   `_stamp_erase` now translate the canvas-space cursor into
+   layer-image space via `layer.offset` before compositing
+   (`app/tools.py`).
+
+### Docs
+6. **`docs/PLUGIN_API.md` updated for category submenus and the
+   hidden-failed-plugins behavior.** New filter example shows
+   `category="Color"`; sandbox section explains where to find load
+   failures now that they no longer appear in the menu.
+
+## 2026-05-02 (round 29) — 2 updates
+
+### Fixed
+1. **Scroll wheel zoomed instead of panning vertically.** `Canvas.wheelEvent`
+   now treats unmodified scroll as vertical pan and reserves zoom for
+   `Ctrl+scroll`. `Shift+scroll` still pans horizontally
+   (`app/canvas.py:wheelEvent`).
+2. **Right-click did nothing on the canvas.** `Canvas` mouse handlers now
+   accept right-button presses, swap `ToolContext.primary_color` with
+   `secondary_color` for the duration of the stroke, and restore them on
+   release — so right-drag paints/fills/draws shapes with color 2
+   (`app/canvas.py:mousePressEvent`, `mouseReleaseEvent`,
+   `_swap_tool_colors`).
+
+## 2026-05-02 (round 28) — 9 updates
+
+### Fixed
+1. **Magic wand "copies invisible pixels".** Sample now uses RGB-only
+   tolerance and skips fully-transparent (`alpha == 0`) pixels when the
+   user clicked a visible pixel; clicking a transparent pixel matches
+   only other transparent pixels. Stops the wand from selecting the
+   "empty" canvas just because its RGB happened to fall within the
+   tolerance band of the clicked color (`app/tools.py:_sample_and_commit`).
+2. **Magic wand re-click destroyed prior selection on tolerance retune.**
+   `MagicWandTool` now stores the last sample point as a seed
+   (`(layer, lx, ly, ctrl_mode)`). A new `reapply()` method re-runs the
+   flood from that seed using the current `fill_tolerance`, so editing
+   the tolerance slider/spin updates the same selection live instead of
+   forcing the user to re-click and accidentally replace the selection
+   with an empty mask.
+3. **Tolerance changes propagate to the wand live.** `ToolContext`
+   gained an `on_tolerance_changed` hook; `ToolPanel._on_tolerance` now
+   invokes it after writing `ctx.fill_tolerance`. `MainWindow` wires it
+   to a `_tolerance_live_update` that calls `MagicWand.reapply()` so
+   the canvas refreshes the moment the slider moves.
+4. **Enter/Return wasn't confirming an in-progress transform after the
+   user typed in the tolerance / size spinbox.** The spinbox kept
+   keyboard focus and consumed Return before it could bubble up to
+   `MainWindow.keyPressEvent`. `Canvas` now sets
+   `Qt.FocusPolicy.ClickFocus`, so clicking the canvas pulls focus off
+   the spinbox and Enter cleanly hits `_confirm_selection`.
+5. **Pasted images dropped at the canvas top-left corner.** All three
+   `_paste_new_layer` modes now center: *anchor* sets `offset` to
+   `((cw-iw)//2, (ch-ih)//2)`; *extend* writes the image at
+   `((new_w-iw)//2, (new_h-ih)//2)` in the (possibly enlarged) buffer;
+   *crop* draws from the source's center into the destination's center
+   so the visually important middle survives both sides of the clip.
+6. **Zoom-in lag.** `Canvas.paintEvent`'s checkerboard background
+   iterated the full target rect, so zooming ~10× on a 2k canvas ran
+   ~1.5M `fillRect` calls per repaint. Iteration now clips to
+   `target ∩ widget.rect()` while snapping the start cell to the
+   original grid so colour parity stays consistent across pans.
+
+### Added
+7. **Translucent selection highlight.** `Canvas.paintEvent` now paints
+   a semi-transparent blue fill over the selection mask before drawing
+   the marching ants, so a selected region is obvious at a glance even
+   when the dashed outline is small or far away. Highlight pixmap is
+   cached per `(id(mask), size)` so it costs nothing across pans/zooms
+   while the selection is stationary (`_paint_selection_highlight`).
+8. **`SliderField` widget.** New shared
+   `app/ui/slider_field.py` packs a `QSlider` + `QSpinBox` into one
+   widget exposing the QSlider API (`valueChanged`, `value`,
+   `setValue`, `setRange`, `blockSignals`). Users can drag *or* type a
+   value; the two stay in sync. Replaced every standalone slider in
+   `tool_panel.py` (hardness / opacity / spacing / tolerance — both the
+   panel layout and the toolbar layout), `layer_panel.py` (layer
+   opacity), and `color_panel.py` (HSV value). Old per-slider
+   `*_label` widgets are gone — the spinbox doubles as the live value
+   readout.
+9. **Live filter preview.** `PluginSettingsDialog` now accepts an
+   optional `preview_callback(values)`; every settings widget's change
+   signal triggers the callback (debounced 80 ms via `QTimer`). Default
+   parameters are previewed once on dialog open. `MainWindow._invoke_filter`
+   snapshots the original layer image, supplies a callback that re-runs
+   the filter on a copy and refreshes the canvas, then either applies
+   the chosen settings (Accept) or restores the snapshot (Cancel).
+   Errors during preview are swallowed so the dialog stays usable; the
+   final apply still surfaces failures through the existing error path.
+
+### Changed
+- **`Edit → Invert Selection` shortcut moved from `Ctrl+Shift+I` to
+  `Ctrl+I`** so it matches the user's expected single-modifier binding.
+
 ## 2026-05-02 (round 27)
 
 ### Changed

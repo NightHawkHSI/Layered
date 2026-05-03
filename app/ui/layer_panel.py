@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from ..blending import BLEND_MODES
 from ..layer import LayerStack
+from .slider_field import SliderField
 
 
 def _layer_thumbnail(image, size: int) -> QPixmap:
@@ -105,11 +106,9 @@ class LayerPanel(QWidget):
         self.blend_combo.setMinimumWidth(0)
         self.blend_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(100)
+        self.opacity_slider = SliderField(0, 100, 100, suffix="%")
         self.opacity_slider.valueChanged.connect(self._on_opacity_change)
-        self.opacity_slider.sliderReleased.connect(self._on_opacity_release)
+        self.opacity_slider.slider.sliderReleased.connect(self._on_opacity_release)
         self.opacity_slider.setMinimumWidth(0)
         self.opacity_slider.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 

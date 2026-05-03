@@ -7,7 +7,7 @@ class SharpenPlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_filter("Sharpen", self.apply)
+        ctx.register_filter("Sharpen", self.apply, category="Effects")
 
     def apply(self, image: Image.Image) -> Image.Image:
         try:

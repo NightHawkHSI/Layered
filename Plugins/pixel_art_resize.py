@@ -18,6 +18,7 @@ class PixelArtResizePlugin(Plugin):
                 Setting(name="mode", type="choice", default="upscale",
                         choices=["upscale", "downscale"], label="Direction"),
             ],
+            category="Generators",
         )
         ctx.logger.info("Pixel Art Resize registered")
 

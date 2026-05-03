@@ -19,6 +19,7 @@ class GlowFilterPlugin(Plugin):
                 Setting(name="mode", type="choice", default="screen",
                         choices=["screen", "add", "lighten"], label="Blend mode"),
             ],
+            category="Effects",
         )
         ctx.logger.info("Glow Filter registered")
 

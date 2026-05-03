@@ -7,8 +7,8 @@ class FlipToolPlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_action("Flip Horizontal", self.flip_h)
-        ctx.register_action("Flip Vertical", self.flip_v)
+        ctx.register_action("Flip Horizontal", self.flip_h, category="Utilities")
+        ctx.register_action("Flip Vertical", self.flip_v, category="Utilities")
 
     def flip_h(self):
         self._flip(Image.FLIP_LEFT_RIGHT)

@@ -7,7 +7,7 @@ class CropToolPlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_action("Crop to Center (Demo)", self.crop_center)
+        ctx.register_action("Crop to Center (Demo)", self.crop_center, category="Utilities")
 
     def crop_center(self):
         try:

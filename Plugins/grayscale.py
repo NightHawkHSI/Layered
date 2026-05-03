@@ -32,6 +32,7 @@ class GrayscalePlugin(Plugin):
                     min=0.0, max=1.0, step=0.05,
                 ),
             ],
+            category="Color",
         )
         ctx.logger.info("Grayscale plugin registered")
 

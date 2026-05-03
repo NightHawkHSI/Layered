@@ -35,8 +35,9 @@ class InvertPlugin(Plugin):
                     label="Preserve alpha",
                 ),
             ],
+            category="Color",
         )
-        ctx.register_action("Invert (action)", self._action_invert)
+        ctx.register_action("Invert (action)", self._action_invert, category="Color")
         ctx.logger.info("Invert plugin registered")
 
     @staticmethod

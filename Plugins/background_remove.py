@@ -7,7 +7,7 @@ class SimpleBackgroundRemovePlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_filter("Remove Background (Basic)", self.apply)
+        ctx.register_filter("Remove Background (Basic)", self.apply, category="Generators")
 
     def apply(self, image: Image.Image) -> Image.Image:
         try:

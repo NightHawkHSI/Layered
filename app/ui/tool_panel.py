@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..tools import Tool, ToolContext
+from .slider_field import SliderField
 
 
 # Which brush-settings each tool actually uses. Tools missing from the map
@@ -109,13 +110,13 @@ class ToolPanel(QWidget):
         self.size_slider = self._make_size_slider()
         g_layout.addWidget(self.size_slider)
 
-        self.hardness_slider, self.hardness_label = self._make_pct_row(
+        self.hardness_slider = self._make_pct_row(
             g_layout, "Hardness", self.ctx.brush_hardness, 0, 100, self._on_hardness
         )
-        self.opacity_slider, self.opacity_label = self._make_pct_row(
+        self.opacity_slider = self._make_pct_row(
             g_layout, "Opacity", self.ctx.brush_opacity, 1, 100, self._on_opacity
         )
-        self.spacing_slider, self.spacing_label = self._make_pct_row(
+        self.spacing_slider = self._make_pct_row(
             g_layout, "Spacing", self.ctx.brush_spacing, 1, 100, self._on_spacing
         )
 
@@ -180,33 +181,30 @@ class ToolPanel(QWidget):
         # --- hardness ---
         hardness_actions: list[QAction] = []
         hardness_actions.append(toolbar.addWidget(QLabel("Hardness")))
-        self.hardness_slider, self.hardness_label = self._make_compact_pct_widgets(
+        self.hardness_slider = self._make_compact_pct_widgets(
             self.ctx.brush_hardness, 0, 100, self._on_hardness
         )
         hardness_actions.append(toolbar.addWidget(self.hardness_slider))
-        hardness_actions.append(toolbar.addWidget(self.hardness_label))
         hardness_actions.append(toolbar.addSeparator())
         self._setting_actions["hardness"] = hardness_actions
 
         # --- opacity ---
         opacity_actions: list[QAction] = []
         opacity_actions.append(toolbar.addWidget(QLabel("Opacity")))
-        self.opacity_slider, self.opacity_label = self._make_compact_pct_widgets(
+        self.opacity_slider = self._make_compact_pct_widgets(
             self.ctx.brush_opacity, 1, 100, self._on_opacity
         )
         opacity_actions.append(toolbar.addWidget(self.opacity_slider))
-        opacity_actions.append(toolbar.addWidget(self.opacity_label))
         opacity_actions.append(toolbar.addSeparator())
         self._setting_actions["opacity"] = opacity_actions
 
         # --- spacing ---
         spacing_actions: list[QAction] = []
         spacing_actions.append(toolbar.addWidget(QLabel("Spacing")))
-        self.spacing_slider, self.spacing_label = self._make_compact_pct_widgets(
+        self.spacing_slider = self._make_compact_pct_widgets(
             self.ctx.brush_spacing, 1, 100, self._on_spacing
         )
         spacing_actions.append(toolbar.addWidget(self.spacing_slider))
-        spacing_actions.append(toolbar.addWidget(self.spacing_label))
         spacing_actions.append(toolbar.addSeparator())
         self._setting_actions["spacing"] = spacing_actions
 
@@ -222,11 +220,10 @@ class ToolPanel(QWidget):
         # --- tolerance ---
         tol_actions: list[QAction] = []
         tol_actions.append(toolbar.addWidget(QLabel("Tolerance")))
-        self.tolerance_slider, self.tolerance_label = self._make_compact_int_widgets(
+        self.tolerance_slider = self._make_compact_int_widgets(
             int(self.ctx.fill_tolerance), 0, 255, self._on_tolerance
         )
         tol_actions.append(toolbar.addWidget(self.tolerance_slider))
-        tol_actions.append(toolbar.addWidget(self.tolerance_label))
         tol_actions.append(toolbar.addSeparator())
         self._setting_actions["tolerance"] = tol_actions
 
@@ -251,25 +248,15 @@ class ToolPanel(QWidget):
                 else:
                     a.setEnabled(enabled)
 
-    def _make_compact_pct_widgets(self, init: float, lo: int, hi: int, slot):
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(lo, hi)
-        s.setValue(int(init * 100))
-        s.setFixedWidth(90)
-        s.valueChanged.connect(slot)
-        lab = QLabel(f"{int(init * 100)}%")
-        lab.setMinimumWidth(38)
-        return s, lab
+    def _make_compact_pct_widgets(self, init: float, lo: int, hi: int, slot) -> SliderField:
+        sf = SliderField(lo, hi, int(init * 100), suffix="%", slider_width=90)
+        sf.valueChanged.connect(slot)
+        return sf
 
-    def _make_compact_int_widgets(self, init: int, lo: int, hi: int, slot):
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(lo, hi)
-        s.setValue(int(init))
-        s.setFixedWidth(90)
-        s.valueChanged.connect(slot)
-        lab = QLabel(str(int(init)))
-        lab.setMinimumWidth(38)
-        return s, lab
+    def _make_compact_int_widgets(self, init: int, lo: int, hi: int, slot) -> SliderField:
+        sf = SliderField(lo, hi, int(init), slider_width=90)
+        sf.valueChanged.connect(slot)
+        return sf
 
     # --- widget builders ----------------------------------------------------
 
@@ -288,19 +275,12 @@ class ToolPanel(QWidget):
         return s
 
     def _make_pct_row(self, parent_layout: QVBoxLayout, label: str, init: float,
-                      lo: int, hi: int, slot) -> tuple[QSlider, QLabel]:
-        row = QHBoxLayout()
-        row.addWidget(QLabel(label))
-        lab = QLabel(f"{int(init * 100)}%")
-        row.addStretch(1)
-        row.addWidget(lab)
-        parent_layout.addLayout(row)
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(lo, hi)
-        s.setValue(int(init * 100))
-        s.valueChanged.connect(slot)
-        parent_layout.addWidget(s)
-        return s, lab
+                      lo: int, hi: int, slot) -> SliderField:
+        parent_layout.addWidget(QLabel(label))
+        sf = SliderField(lo, hi, int(init * 100), suffix="%")
+        sf.valueChanged.connect(slot)
+        parent_layout.addWidget(sf)
+        return sf
 
     def _sep(self) -> QFrame:
         f = QFrame()
@@ -332,6 +312,14 @@ class ToolPanel(QWidget):
         if toolbar is not None and self._layout_mode == "toolbar":
             toolbar.addWidget(self._buttons[name])
 
+    def remove_tool_button(self, name: str) -> None:
+        btn = self._buttons.pop(name, None)
+        if btn is None:
+            return
+        self._group.removeButton(btn)
+        btn.setParent(None)
+        btn.deleteLater()
+
     # --- handlers -----------------------------------------------------------
 
     def _on_size_change(self, v: int) -> None:
@@ -348,23 +336,18 @@ class ToolPanel(QWidget):
 
     def _on_hardness(self, v: int) -> None:
         self.ctx.brush_hardness = v / 100.0
-        if self.hardness_label is not None:
-            self.hardness_label.setText(f"{v}%")
 
     def _on_opacity(self, v: int) -> None:
         self.ctx.brush_opacity = v / 100.0
-        if self.opacity_label is not None:
-            self.opacity_label.setText(f"{v}%")
 
     def _on_spacing(self, v: int) -> None:
         self.ctx.brush_spacing = v / 100.0
-        if self.spacing_label is not None:
-            self.spacing_label.setText(f"{v}%")
 
     def _on_fill_shape(self, on: bool) -> None:
         self.ctx.fill_shape = bool(on)
 
     def _on_tolerance(self, v: int) -> None:
         self.ctx.fill_tolerance = int(v)
-        if getattr(self, "tolerance_label", None) is not None:
-            self.tolerance_label.setText(str(int(v)))
+        cb = getattr(self.ctx, "on_tolerance_changed", None)
+        if cb is not None:
+            cb()

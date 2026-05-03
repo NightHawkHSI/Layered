@@ -19,6 +19,7 @@ class TileFixPlugin(Plugin):
                 Setting(name="blend_radius", type="int", default=24, min=2, max=256, step=2,
                         label="Seam blend radius"),
             ],
+            category="Generators",
         )
 
     def apply(self, image: Image.Image, *, mode: str = "offset",

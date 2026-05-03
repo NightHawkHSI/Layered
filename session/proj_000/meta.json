@@ -1,0 +1,88 @@
+{
+  "name": "Untitled",
+  "path": null,
+  "width": 1024,
+  "height": 768,
+  "active_index": 5,
+  "dirty": true,
+  "layers": [
+    {
+      "name": "Background",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_000.png"
+    },
+    {
+      "name": "Layer 2",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_001.png"
+    },
+    {
+      "name": "Layer 3",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_002.png"
+    },
+    {
+      "name": "Layer 4",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_003.png"
+    },
+    {
+      "name": "Layer 5",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_004.png"
+    },
+    {
+      "name": "Layer 6",
+      "visible": true,
+      "opacity": 1.0,
+      "blend_mode": "Normal",
+      "offset": [
+        0,
+        0
+      ],
+      "locked": false,
+      "group": null,
+      "image_file": "layer_005.png"
+    }
+  ]
+}

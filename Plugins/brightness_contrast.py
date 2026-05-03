@@ -7,7 +7,7 @@ class BrightnessContrastPlugin(Plugin):
 
     def register(self, ctx: PluginContext) -> None:
         self.ctx = ctx
-        ctx.register_filter("Brightness / Contrast", self.apply)
+        ctx.register_filter("Brightness / Contrast", self.apply, category="Color")
 
         self.settings = {
             "brightness": 1.0,  # 0.0 - 2.0

@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..tools import ToolContext
+from .slider_field import SliderField
 
 
 def _qcolor_from_tuple(c) -> QColor:
@@ -212,9 +213,7 @@ class ColorPanel(QWidget):
         self.wheel.primary_picked.connect(self.set_primary)
         self.wheel.secondary_picked.connect(self.set_secondary)
 
-        self.value_slider = QSlider(Qt.Orientation.Horizontal)
-        self.value_slider.setRange(0, 100)
-        self.value_slider.setValue(100)
+        self.value_slider = SliderField(0, 100, 100, suffix="%")
         self.value_slider.valueChanged.connect(lambda v: self.wheel.set_value(v / 100.0))
 
         # All controls live in an inner widget so a QScrollArea can host
