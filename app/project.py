@@ -22,9 +22,12 @@ class Selection:
 
     `mask` is an L-mode image the size of the canvas: 255 = inside,
     0 = outside. `bbox` is the tight bounding box for fast clipping.
+    `is_full` is set when the selection covers the whole canvas — paint
+    tools use it to skip the per-op selection composite (perf fast-path).
     """
     bbox: tuple[int, int, int, int]
     mask: Image.Image
+    is_full: bool = False
 
     @classmethod
     def rect(cls, x0: int, y0: int, x1: int, y1: int, canvas_w: int, canvas_h: int) -> "Selection":
@@ -32,14 +35,17 @@ class Selection:
         y0, y1 = sorted((max(0, min(canvas_h, int(y0))), max(0, min(canvas_h, int(y1)))))
         mask = Image.new("L", (canvas_w, canvas_h), 0)
         ImageDraw.Draw(mask).rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
-        return cls(bbox=(x0, y0, x1, y1), mask=mask)
+        full = (x0, y0, x1, y1) == (0, 0, canvas_w, canvas_h)
+        return cls(bbox=(x0, y0, x1, y1), mask=mask, is_full=full)
 
     @classmethod
     def from_mask(cls, mask: Image.Image) -> Optional["Selection"]:
         bb = mask.getbbox()
         if bb is None:
             return None
-        return cls(bbox=bb, mask=mask)
+        cw, ch = mask.size
+        full = bb == (0, 0, cw, ch) and mask.getextrema() == (255, 255)
+        return cls(bbox=bb, mask=mask, is_full=full)
 
 
 @dataclass

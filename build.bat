@@ -85,6 +85,7 @@ if exist "%ROOT%\Icon.ico" set ICONARG=--icon="%ROOT%\Icon.ico"
 call :stage  60 "freezing exe with PyInstaller (this is the slow step)"
 %PY% -m PyInstaller --noconfirm --onefile --windowed --name Layered ^
     --collect-submodules app ^
+    --collect-submodules PIL ^
     %ICONARG% ^
     --distpath "%RELEASE%" ^
     --workpath "%BUILDTMP%\build" ^

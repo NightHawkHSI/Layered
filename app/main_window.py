@@ -164,6 +164,10 @@ class MainWindow(QMainWindow):
         self.tools = build_default_tools(self.tool_ctx)
         if "Picker" in self.tools:
             self.tools["Picker"].on_pick = lambda c: self.color_panel.set_primary(c)  # type: ignore[attr-defined]
+        if "Text" in self.tools:
+            text_tool = self.tools["Text"]
+            text_tool.on_layer_committed = self._on_action_committed  # type: ignore[attr-defined]
+            text_tool.on_layer_created = self._on_text_new_layer  # type: ignore[attr-defined]
 
         self.canvas = Canvas(self.current().stack)
         self.canvas.selection_provider = lambda: self.current().selection
@@ -666,11 +670,8 @@ class MainWindow(QMainWindow):
         prev = self.canvas.tool
         if prev is self.tools.get("Text") and name != "Text":
             self._on_text_commit()
-        # Photoshop-style: picking Move while a selection is active routes
-        # to Sel Transform so the user drags the masked pixels rather than
-        # the whole layer.
-        if name == "Move" and self.current().selection is not None and "Sel Transform" in self.tools:
-            name = "Sel Transform"
+        # Move tool now lifts and drags the masked pixels itself when a
+        # selection is active (no longer redirects to Sel Transform).
         tool = self.tools.get(name)
         if tool is None:
             return
@@ -720,6 +721,15 @@ class MainWindow(QMainWindow):
         label = text_tool.commit()
         if label:
             self._on_action_committed(label)
+
+    def _on_text_new_layer(self) -> None:
+        # Text tool just dropped a fresh layer at a click point. Surface
+        # the panel and clear it so the user can type into the new layer.
+        dock = self._docks.get("Text")
+        if dock is not None:
+            dock.show(); dock.raise_()
+        if hasattr(self, "text_panel"):
+            self.text_panel.reset_for_new_layer()
 
     def _on_new(self) -> None:
         # Pre-fill canvas dims with the size of whatever is on the
@@ -1684,9 +1694,11 @@ class MainWindow(QMainWindow):
                     self.canvas.fit_to_window()
                 action_desc = f"Paste ({source_label}) — extend canvas to {new_w}×{new_h}"
             elif mode == "anchor":
-                ox = (cw - iw) // 2
-                oy = (ch - ih) // 2
-                proj.stack.add_layer(Layer(name=source_label, image=img, offset=(ox, oy)))
+                ox = max(0, (cw - iw) // 2)
+                oy = max(0, (ch - ih) // 2)
+                new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
+                new_arr[oy:oy + ih_a, ox:ox + iw_a] = img_arr
+                proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
                 action_desc = f"Paste ({source_label}) — anchor full image"
             else:  # crop — fit pasted pixels into canvas, centered
                 new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
@@ -1882,6 +1894,18 @@ class MainWindow(QMainWindow):
         # pixels land. Text inputs (QLineEdit, QSpinBox, QPlainTextEdit,
         # etc.) already consume Return/Enter before it bubbles up here.
         from PyQt6.QtCore import Qt as _Qt
+        # Tab while Text tool is active focuses the Text panel input so
+        # the user can type/edit immediately after dropping a text layer
+        # without reaching for the mouse.
+        if event.key() == _Qt.Key.Key_Tab and self.canvas.tool is self.tools.get("Text"):
+            panel = getattr(self, "text_panel", None)
+            if panel is not None and getattr(panel, "text_edit", None) is not None:
+                dock = self._docks.get("Text")
+                if dock is not None:
+                    dock.show(); dock.raise_()
+                panel.text_edit.setFocus()
+                event.accept()
+                return
         if event.key() in (_Qt.Key.Key_Return, _Qt.Key.Key_Enter):
             self._confirm_selection()
             event.accept()

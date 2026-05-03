@@ -114,7 +114,7 @@ class BackdropOutlinePlugin(Plugin):
                     label="Composite with sprite",
                 ),
             ],
-            category="Backdrop",
+            category="Rouge",
         )
 
         ctx.logger.info("Backdrop Outline registered as filter (live preview).")

@@ -50,14 +50,12 @@ class Canvas(QWidget):
         self._panning = False
         self._right_active = False
         self.selection_provider = None  # callable -> Optional[Selection]
-        # Cache of canvas-space selection edge segments keyed by the
-        # mask object id + size, so repaint doesn't re-scan the whole
-        # mask every frame. Each entry is a list of (x0, y0, x1, y1)
-        # in canvas pixel coords representing a single 1-px edge.
-        self._sel_edge_cache: tuple[Optional[int], Optional[tuple[int, int]], list[tuple[int, int, int, int]]] = (None, None, [])
-        # Cached translucent fill pixmap matching the current selection
-        # mask, keyed by mask id + size. Avoids rebuilding each frame.
-        self._sel_fill_cache: tuple[Optional[int], Optional[tuple[int, int]], Optional[QPixmap]] = (None, None, None)
+        # Caches keyed by the mask object itself — holding a strong ref
+        # prevents Python from recycling the id() onto a new mask after
+        # GC, which would otherwise return a stale pixmap/segments for
+        # a freshly committed selection (e.g. mid drag-move).
+        self._sel_edge_cache: tuple[object, Optional[tuple[int, int]], list[tuple[int, int, int, int]]] = (None, None, [])
+        self._sel_fill_cache: tuple[object, Optional[tuple[int, int]], Optional[QPixmap]] = (None, None, None)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
     # --- public API ---
@@ -200,15 +198,15 @@ class Canvas(QWidget):
         cached per (mask id, size) so panning / zooming doesn't re-scan
         the whole mask each repaint.
         """
-        cache_id, cache_size, cache_segs = self._sel_edge_cache
-        if cache_id == id(mask) and cache_size == mask.size:
+        cache_mask, cache_size, cache_segs = self._sel_edge_cache
+        if cache_mask is mask and cache_size == mask.size:
             return cache_segs
         try:
             arr = np.asarray(mask.convert("L") if mask.mode != "L" else mask, dtype=np.uint8) > 0
         except Exception:
             return []
         if not arr.any():
-            self._sel_edge_cache = (id(mask), mask.size, [])
+            self._sel_edge_cache = (mask, mask.size, [])
             return []
         h, w = arr.shape
         segs: list[tuple[int, int, int, int]] = []
@@ -240,13 +238,13 @@ class Canvas(QWidget):
         ys, xs = np.nonzero(right)
         for x, y in zip(xs.tolist(), ys.tolist()):
             segs.append((x + 1, y, x + 1, y + 1))
-        self._sel_edge_cache = (id(mask), mask.size, segs)
+        self._sel_edge_cache = (mask, mask.size, segs)
         return segs
 
     def _paint_selection_highlight(self, painter: QPainter, mask, target: QRectF) -> None:
         """Draw a translucent blue overlay on the selected region."""
-        cache_id, cache_size, cache_pix = self._sel_fill_cache
-        if cache_id == id(mask) and cache_size == mask.size:
+        cache_mask, cache_size, cache_pix = self._sel_fill_cache
+        if cache_mask is mask and cache_size == mask.size:
             pix = cache_pix
         else:
             try:
@@ -254,7 +252,7 @@ class Canvas(QWidget):
             except Exception:
                 return
             if not arr.any():
-                self._sel_fill_cache = (id(mask), mask.size, None)
+                self._sel_fill_cache = (mask, mask.size, None)
                 return
             h, w = arr.shape
             rgba = np.zeros((h, w, 4), dtype=np.uint8)
@@ -264,7 +262,7 @@ class Canvas(QWidget):
             rgba[..., 3] = (arr.astype(np.uint16) * 90 // 255).astype(np.uint8)
             qimg = QImage(rgba.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
             pix = QPixmap.fromImage(qimg)
-            self._sel_fill_cache = (id(mask), mask.size, pix)
+            self._sel_fill_cache = (mask, mask.size, pix)
         if pix is not None:
             painter.drawPixmap(target, pix, QRectF(pix.rect()))
 

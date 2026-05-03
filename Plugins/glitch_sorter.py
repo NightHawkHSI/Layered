@@ -61,9 +61,9 @@ class GlitchSortPlugin(Plugin):
     version = "1.0.0"
 
     def register(self, ctx: PluginContext) -> None:
-        ctx.register_filter("Glitch Sort (Brightness)", self.sort_brightness)
-        ctx.register_filter("Glitch Sort (Red)", self.sort_red)
-        ctx.register_action("Glitch Sort (Random Chaos)", self.random_sort)
+        ctx.register_filter("Glitch Sort (Brightness)", self.sort_brightness, category="Glitch")
+        ctx.register_filter("Glitch Sort (Red)", self.sort_red, category="Glitch")
+        ctx.register_action("Glitch Sort (Random Chaos)", self.random_sort, category="Glitch")
         ctx.register_tool("Glitch Brush", GlitchBrush(ctx))
 
         self.ctx = ctx

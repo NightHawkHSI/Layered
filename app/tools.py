@@ -120,9 +120,14 @@ def _selection_at_layer(ctx: ToolContext, layer: Layer) -> Optional[Image.Image]
     sel = ctx.get_selection()
     if sel is None or getattr(sel, "mask", None) is None:
         return None
-    canvas_mask: Image.Image = sel.mask
+    # Full-canvas selection on a layer that exactly fills the canvas → no
+    # clipping needed; tell the caller "no mask" so per-stamp work skips
+    # the multiply (big win on Brush/Eraser after Select All).
     ox, oy = layer.offset
     lw, lh = layer.image.size
+    if getattr(sel, "is_full", False) and (ox, oy) == (0, 0) and sel.mask.size == (lw, lh):
+        return None
+    canvas_mask: Image.Image = sel.mask
     if canvas_mask.size == (lw, lh) and (ox, oy) == (0, 0):
         return canvas_mask
     out = Image.new("L", (lw, lh), 0)
@@ -145,6 +150,27 @@ def _apply_selection_to_stamp(stamp_alpha: Image.Image, ctx: ToolContext, layer:
     pad = Image.new("L", (sw, sh), 0)
     pad.paste(sub, (x0 - dx, y0 - dy))
     return ImageChops.multiply(stamp_alpha, pad)
+
+
+def _clip_layer_to_selection(layer: Layer, ctx: ToolContext, before: Image.Image) -> None:
+    """After a paint op writes to `layer.image`, restore pixels outside the
+    active selection from `before`. No-op when no selection is active.
+    Use for tools that paint via direct ImageDraw / floodfill (Fill, Line,
+    shapes) instead of stamp-based painting.
+    """
+    if ctx.get_selection is not None:
+        sel_obj = ctx.get_selection()
+        if sel_obj is not None and getattr(sel_obj, "is_full", False):
+            ox, oy = layer.offset
+            cw_ch = sel_obj.mask.size if getattr(sel_obj, "mask", None) is not None else (0, 0)
+            if (ox, oy) == (0, 0) and layer.image.size == cw_ch:
+                return
+    sel = _selection_at_layer(ctx, layer)
+    if sel is None:
+        return
+    if before.size != layer.image.size or before.mode != layer.image.mode:
+        before = before.convert(layer.image.mode).resize(layer.image.size)
+    layer.image = Image.composite(layer.image, before, sel)
 
 
 def _stamp_color(layer: Layer, x: int, y: int, color: Color, mask: Image.Image, opacity: float,
@@ -278,7 +304,9 @@ class FillTool(Tool):
         replacement = self.ctx.primary_color
         if target == replacement:
             return
+        before = rgba.copy()
         ImageDraw.floodfill(rgba, (lx, ly), replacement, thresh=self.ctx.fill_tolerance)
+        _clip_layer_to_selection(layer, self.ctx, before)
 
 
 class LineTool(Tool):
@@ -295,6 +323,7 @@ class LineTool(Tool):
         ImageDraw.Draw(layer.image).line(
             [self._origin, (x, y)], fill=self.ctx.primary_color, width=self.ctx.brush_size
         )
+        _clip_layer_to_selection(layer, self.ctx, self._snapshot)
 
     def release(self, layer: Layer, x: int, y: int) -> None:
         self._origin = None
@@ -469,6 +498,7 @@ class _ShapeTool(Tool):
             return
         layer.image = self._snapshot.copy()
         self._draw(layer, self._bbox)
+        _clip_layer_to_selection(layer, self.ctx, self._snapshot)
 
     def _commit_session(self) -> None:
         """Flush the in-progress shape as its own history snapshot."""
@@ -574,22 +604,135 @@ class PickerTool(Tool):
 
 
 class MoveTool(Tool):
-    """Drag the active layer around the canvas by adjusting its offset."""
+    """Drag the active layer — or, if a selection is active, the pixels
+    inside that selection — around the canvas.
+
+    With no selection, dragging shifts `layer.offset` so the whole layer
+    pans. With a selection, the pixels under the mask are lifted on
+    press, follow the cursor as a floating buffer, and land at the drop
+    position on release. The selection mask travels with them.
+    """
     name = "Move"
+    commit_on = None  # we issue our own commit_action when moving a selection
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._origin: Optional[Tuple[int, int]] = None
+        self._initial_offset: Optional[Tuple[int, int]] = None
+        # Selection-drag state.
+        self._sel_drag: bool = False
+        self._sel_anchor: Optional[Tuple[int, int]] = None
+        self._sel_start_mask: Optional[Image.Image] = None
+        self._sel_base: Optional[Image.Image] = None
+        self._sel_lifted: Optional[Image.Image] = None
+        self._sel_layer: Optional[Layer] = None
+
+    def _begin_selection_drag(self, layer: Layer, x: int, y: int) -> bool:
+        if self.ctx.get_selection is None or self.ctx.set_selection is None:
+            return False
+        sel = self.ctx.get_selection()
+        if sel is None or getattr(sel, "mask", None) is None:
+            return False
+        mask: Image.Image = sel.mask
+        ox, oy = layer.offset
+        lw, lh = layer.image.size
+        layer_mask = Image.new("L", (lw, lh), 0)
+        layer_mask.paste(mask, (-ox, -oy))
+        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+        lr, lg, lb, la = src.split()
+        lifted_alpha = ImageChops.multiply(la, layer_mask)
+        if lifted_alpha.getextrema()[1] == 0:
+            return False
+        lifted = Image.merge("RGBA", (lr, lg, lb, lifted_alpha))
+        keep = layer_mask.point(lambda v: 255 - v)
+        base_alpha = ImageChops.multiply(la, keep)
+        base_r = ImageChops.multiply(lr, keep)
+        base_g = ImageChops.multiply(lg, keep)
+        base_b = ImageChops.multiply(lb, keep)
+        base = Image.merge("RGBA", (base_r, base_g, base_b, base_alpha))
+        layer.image = base.copy()
+        self._sel_drag = True
+        self._sel_anchor = (x, y)
+        self._sel_start_mask = mask.copy()
+        self._sel_base = base
+        self._sel_lifted = lifted
+        self._sel_layer = layer
+        self._continue_selection_drag(x, y)
+        return True
+
+    def _continue_selection_drag(self, x: int, y: int) -> None:
+        if (not self._sel_drag or self._sel_anchor is None
+                or self._sel_start_mask is None
+                or self._sel_base is None or self._sel_lifted is None
+                or self._sel_layer is None
+                or self.ctx.set_selection is None):
+            return
+        ax, ay = self._sel_anchor
+        dx, dy = int(x - ax), int(y - ay)
+        layer = self._sel_layer
+        canvas_layer = self._sel_base.copy()
+        shifted = Image.new("RGBA", canvas_layer.size, (0, 0, 0, 0))
+        shifted.paste(self._sel_lifted, (dx, dy))
+        canvas_layer.alpha_composite(shifted)
+        layer.image = canvas_layer
+        mw, mh = self._sel_start_mask.size
+        shifted_mask = Image.new("L", (mw, mh), 0)
+        shifted_mask.paste(self._sel_start_mask, (dx, dy))
+        from .project import Selection
+        bb = shifted_mask.getbbox()
+        if bb is None:
+            self.ctx.set_selection(None)
+        else:
+            self.ctx.set_selection(Selection(bbox=bb, mask=shifted_mask))
+
+    def _end_selection_drag(self) -> bool:
+        if not self._sel_drag:
+            return False
+        ca = getattr(self.ctx, "commit_action", None)
+        if ca is not None:
+            try:
+                ca("Move selection")
+            except Exception:
+                pass
+        self._sel_drag = False
+        self._sel_anchor = None
+        self._sel_start_mask = None
+        self._sel_base = None
+        self._sel_lifted = None
+        self._sel_layer = None
+        return True
 
     def press(self, layer: Layer, x: int, y: int) -> None:
+        if self._begin_selection_drag(layer, x, y):
+            self._origin = None
+            self._initial_offset = None
+            return
         self._origin = (x, y)
         self._initial_offset = layer.offset
 
     def move(self, layer: Layer, x: int, y: int) -> None:
-        if not getattr(self, "_origin", None):
+        if self._sel_drag:
+            self._continue_selection_drag(x, y)
+            return
+        if not self._origin or self._initial_offset is None:
             return
         ox, oy = self._origin
         ix, iy = self._initial_offset
         layer.offset = (ix + (x - ox), iy + (y - oy))
 
     def release(self, layer: Layer, x: int, y: int) -> None:
+        if self._end_selection_drag():
+            super().release(layer, x, y)
+            return
+        if self._origin is not None and self._initial_offset is not None:
+            ca = getattr(self.ctx, "commit_action", None)
+            if ca is not None and layer.offset != self._initial_offset:
+                try:
+                    ca("Move layer")
+                except Exception:
+                    pass
         self._origin = None
+        self._initial_offset = None
         super().release(layer, x, y)
 
 
@@ -615,11 +758,11 @@ class TransformTool(Tool):
     # --- bbox helpers ---
 
     def _layer_bbox(self, layer: Layer) -> Optional[tuple[int, int, int, int]]:
-        bb = layer.image.getbbox()
-        if bb is None:
-            return None
         ox, oy = layer.offset
-        return (bb[0] + ox, bb[1] + oy, bb[2] + ox, bb[3] + oy)
+        lw, lh = layer.image.size
+        if lw <= 0 or lh <= 0:
+            return None
+        return (ox, oy, ox + lw, oy + lh)
 
     def _hit_handle(self, layer: Layer, x: int, y: int, hit_radius: int) -> Optional[str]:
         bb = self._layer_bbox(layer)
@@ -906,11 +1049,18 @@ class _SelectionToolBase(Tool):
             return False
         lifted = Image.merge("RGBA", (lr, lg, lb, lifted_alpha))
 
-        # Base layer: same pixels but with the selected region erased
-        # (alpha multiplied by the inverted mask).
+        # Base layer: same pixels but with the selected region erased.
+        # Multiply RGB by the inverted mask too — leaving orig_rgb with
+        # alpha=0 creates "ghost" pixels that are invisible but still
+        # differ from true transparent (0,0,0,0). Those ghosts block
+        # floodfill (different color stops the flood) and would also
+        # leak back via Lighter/Multiply blends.
         keep = layer_mask.point(lambda v: 255 - v)
         base_alpha = ImageChops.multiply(la, keep)
-        base = Image.merge("RGBA", (lr, lg, lb, base_alpha))
+        base_r = ImageChops.multiply(lr, keep)
+        base_g = ImageChops.multiply(lg, keep)
+        base_b = ImageChops.multiply(lb, keep)
+        base = Image.merge("RGBA", (base_r, base_g, base_b, base_alpha))
 
         layer.image = base.copy()
 
@@ -1128,15 +1278,8 @@ class MagicWandTool(_SelectionToolBase):
         lx, ly = x - ox, y - oy
         if not (0 <= lx < layer.image.width and 0 <= ly < layer.image.height):
             return
-        # Clicked pixel is fully transparent (e.g. just deleted): no
-        # content to wand. Clear any leftover selection so the user sees
-        # "nothing there" instead of a flood-fill of the empty region.
-        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        if src.getpixel((lx, ly))[3] == 0:
-            if self.ctx.set_selection is not None:
-                self.ctx.set_selection(None)
-            self._seed = None
-            return
+        # Transparent click flood-fills the connected empty region
+        # ("select open area"). _sample_and_commit handles target alpha=0.
         self._sample_and_commit(layer, lx, ly, additive_mode=(self.ctx.shift_held or self.ctx.alt_held))
 
     def _sample_and_commit(
@@ -1287,6 +1430,10 @@ class TextTool(Tool):
         self._target_stack = None  # set externally so we can add layers
         self._target_layer: Optional[Layer] = None
         self._position: tuple[int, int] = (0, 0)
+        # Host hooks: fired after commit() and after a new layer is dropped
+        # so the host can label history and reset the Text panel.
+        self.on_layer_committed: Optional[Callable[[str], None]] = None
+        self.on_layer_created: Optional[Callable[[], None]] = None
 
     def attach_stack(self, stack) -> None:
         self._target_stack = stack
@@ -1294,15 +1441,29 @@ class TextTool(Tool):
     def press(self, layer: Layer, x: int, y: int) -> None:
         if self._target_stack is None:
             return
-        if self._target_layer is None or self._target_layer not in self._target_stack.layers:
-            new_layer = Layer(
-                name="Text",
-                image=Image.new("RGBA", (self._target_stack.width, self._target_stack.height), (0, 0, 0, 0)),
-            )
-            self._target_stack.add_layer(new_layer)
-            self._target_layer = new_layer
+        # Each fresh canvas click commits whatever text is currently being
+        # edited and starts a new text layer at the click point. Drag (move)
+        # still relocates the just-dropped layer until the next press.
+        if self._target_layer is not None and self._target_layer in self._target_stack.layers:
+            label = self._commit_active()
+            if label and self.on_layer_committed is not None:
+                try:
+                    self.on_layer_committed(label)
+                except Exception:
+                    pass
+        new_layer = Layer(
+            name="Text",
+            image=Image.new("RGBA", (self._target_stack.width, self._target_stack.height), (0, 0, 0, 0)),
+        )
+        self._target_stack.add_layer(new_layer)
+        self._target_layer = new_layer
         self._position = (x, y)
         self.rerender()
+        if self.on_layer_created is not None:
+            try:
+                self.on_layer_created()
+            except Exception:
+                pass
 
     def move(self, layer: Layer, x: int, y: int) -> None:
         # Drag to relocate text.
@@ -1327,17 +1488,25 @@ class TextTool(Tool):
         )
         if text:
             d = ImageDraw.Draw(canvas)
-            d.text(self._position, text, fill=self.ctx.primary_color, font=font)
+            # multiline_text honours embedded "\n" so users can author
+            # multi-line strings from the Text panel.
+            try:
+                d.multiline_text(self._position, text, fill=self.ctx.primary_color, font=font)
+            except Exception:
+                d.text(self._position, text, fill=self.ctx.primary_color, font=font)
         self._target_layer.image = canvas
         self._target_stack.invalidate_cache()
 
-    def commit(self) -> Optional[str]:
-        """Stop editing the current text layer. Returns the label or None."""
+    def _commit_active(self) -> Optional[str]:
         if self._target_layer is None:
             return None
         label = f"Text: {self.ctx.text or ''}"[:40]
         self._target_layer = None
         return label
+
+    def commit(self) -> Optional[str]:
+        """Stop editing the current text layer. Returns the label or None."""
+        return self._commit_active()
 
     def _load_font(self, family: str, size: int):
         # Try a TrueType font; fall back to default. Allow selecting by family

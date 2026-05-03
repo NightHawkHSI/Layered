@@ -7,6 +7,7 @@ from PIL.ImageQt import ImageQt
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -62,6 +63,13 @@ class LayerPanel(QWidget):
         self.setMinimumSize(0, 0)
         self.list.currentRowChanged.connect(self._on_row_changed)
         self.list.itemChanged.connect(self._on_item_changed)
+        # Click-and-drag reorder.
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list.setMovement(QListWidget.Movement.Snap)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._suppress_reorder = False
+        self.list.model().rowsMoved.connect(self._on_rows_moved)
 
         # Compact glyphs + tooltips so the button row can shrink to a
         # narrow dock width on small screens. Letting Qt size each
@@ -80,12 +88,18 @@ class LayerPanel(QWidget):
         self.down_btn.setToolTip("Move layer down")
         self.rename_btn = QPushButton("✎")
         self.rename_btn.setToolTip("Rename layer")
+        self.merge_up_btn = QPushButton("⇧")
+        self.merge_up_btn.setToolTip("Combine with layer above")
+        self.merge_down_btn = QPushButton("⇩")
+        self.merge_down_btn.setToolTip("Combine with layer below")
         self.add_btn.clicked.connect(self._on_add)
         self.dup_btn.clicked.connect(self.duplicate_requested.emit)
         self.del_btn.clicked.connect(self._on_del)
         self.up_btn.clicked.connect(self._on_up)
         self.down_btn.clicked.connect(self._on_down)
         self.rename_btn.clicked.connect(self._on_rename)
+        self.merge_up_btn.clicked.connect(self._on_merge_up)
+        self.merge_down_btn.clicked.connect(self._on_merge_down)
 
         self._del_shortcut = QShortcut(QKeySequence("Delete"), self.list)
         self._del_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -94,7 +108,7 @@ class LayerPanel(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(2)
         btn_row.setContentsMargins(0, 0, 0, 0)
-        for b in (self.add_btn, self.dup_btn, self.del_btn, self.up_btn, self.down_btn, self.rename_btn):
+        for b in (self.add_btn, self.dup_btn, self.del_btn, self.up_btn, self.down_btn, self.rename_btn, self.merge_up_btn, self.merge_down_btn):
             b.setMinimumWidth(0)
             b.setMaximumWidth(48)
             b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -132,13 +146,14 @@ class LayerPanel(QWidget):
     # --- view sync ---
 
     def refresh(self) -> None:
+        self._suppress_reorder = True
         self.list.blockSignals(True)
         self.list.clear()
         for layer in reversed(self.stack.layers):  # show topmost first
             item = QListWidgetItem(layer.name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
             item.setCheckState(Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked)
-            item.setIcon(QIcon(_layer_thumbnail(layer.image, 40)))
+            item.setIcon(QIcon(_layer_thumbnail(self.stack._positioned(layer), 40)))
             self.list.addItem(item)
 
         if self.stack.active_index >= 0:
@@ -153,6 +168,7 @@ class LayerPanel(QWidget):
                 self.opacity_slider.setValue(int(active.opacity * 100))
                 self.opacity_slider.blockSignals(False)
         self.list.blockSignals(False)
+        self._suppress_reorder = False
 
     def _ui_row_to_index(self, row: int) -> int:
         return len(self.stack.layers) - 1 - row
@@ -226,6 +242,24 @@ class LayerPanel(QWidget):
             self.changed.emit()
             self.committed.emit(f"Rename to {layer.name}")
 
+    def _on_merge_up(self) -> None:
+        if self.stack.active_index < 0:
+            return
+        if self.stack.merge_up(self.stack.active_index) is None:
+            return
+        self.refresh()
+        self.changed.emit()
+        self.committed.emit("Combine with layer above")
+
+    def _on_merge_down(self) -> None:
+        if self.stack.active_index < 0:
+            return
+        if self.stack.merge_down(self.stack.active_index) is None:
+            return
+        self.refresh()
+        self.changed.emit()
+        self.committed.emit("Combine with layer below")
+
     def _on_blend_change(self, mode: str) -> None:
         layer = self.stack.active
         if layer is None:
@@ -248,3 +282,23 @@ class LayerPanel(QWidget):
         if layer is None:
             return
         self.committed.emit(f"Opacity {int(layer.opacity * 100)}%")
+
+    def _on_rows_moved(self, parent, src_start, src_end, dst_parent, dst_row) -> None:
+        # Drag-drop reorder. UI rows are top-first (reversed stack); convert
+        # to stack indices and apply the move, then resync.
+        if self._suppress_reorder:
+            return
+        n = len(self.stack.layers)
+        ui_src = src_start
+        ui_dst = dst_row
+        if ui_dst > ui_src:
+            ui_dst -= 1
+        if ui_src == ui_dst or not (0 <= ui_src < n) or not (0 <= ui_dst < n):
+            self.refresh()
+            return
+        stack_src = n - 1 - ui_src
+        stack_dst = n - 1 - ui_dst
+        self.stack.move(stack_src, stack_dst)
+        self.refresh()
+        self.changed.emit()
+        self.committed.emit("Reorder layers")

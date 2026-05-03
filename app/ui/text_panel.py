@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QLabel,
-    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -33,7 +33,12 @@ class TextPanel(QWidget):
         self.setMinimumSize(0, 0)
         self.ctx = ctx
 
-        self.text_edit = QLineEdit(ctx.text or "Text")
+        # Multi-line so Enter inserts a newline. Tab jumps focus instead
+        # of inserting whitespace so it pairs with the canvas Tab→focus
+        # shortcut without surprising the user.
+        self.text_edit = QPlainTextEdit(ctx.text or "Text")
+        self.text_edit.setTabChangesFocus(True)
+        self.text_edit.setMinimumHeight(60)
         self.text_edit.textChanged.connect(self._on_text)
 
         self.size_spin = QSpinBox()
@@ -66,9 +71,18 @@ class TextPanel(QWidget):
         layout.addWidget(QLabel("Color = primary swatch"))
         layout.addStretch(1)
 
-    def _on_text(self, s: str) -> None:
-        self.ctx.text = s
+    def _on_text(self) -> None:
+        self.ctx.text = self.text_edit.toPlainText()
         self.changed.emit()
+
+    def reset_for_new_layer(self) -> None:
+        """Called after the Text tool drops a new layer: clears the editor
+        and refocuses it so the user can type immediately."""
+        self.text_edit.blockSignals(True)
+        self.text_edit.setPlainText("")
+        self.text_edit.blockSignals(False)
+        self.ctx.text = ""
+        self.text_edit.setFocus()
 
     def _on_size(self, v: int) -> None:
         self.ctx.text_size = int(v)

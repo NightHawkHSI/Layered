@@ -13,7 +13,7 @@ from app.plugin_api import Plugin, Setting
 
 class ShapeGeneratorPlugin(Plugin):
     name = "Shape Generator"
-    version = "1.5.0"
+    version = "1.6.0"
 
     # ----------------------------
     # Math Helpers
@@ -39,7 +39,7 @@ class ShapeGeneratorPlugin(Plugin):
         elif shape == "triangle":
             pts = [(0, -size), (-size, size), (size, size)]
             return self._rotate_points(pts, cx, cy, rotation)
-        return bbox # For circle
+        return bbox  # For circle
 
     # ----------------------------
     # Filter function
@@ -55,6 +55,7 @@ class ShapeGeneratorPlugin(Plugin):
         size: int = 150,
         orbit_radius: int = 0,
         rotation: float = 0.0,
+        auto_spread: bool = True,
         rotation_step: float = 45.0,
         random_rotation: bool = False,
         fill_color=(0, 0, 0, 255),
@@ -73,6 +74,9 @@ class ShapeGeneratorPlugin(Plugin):
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay, "RGBA")
 
+        # Auto spread: evenly divide 180° across all shapes so they form a star
+        effective_step = (180.0 / count) if auto_spread else rotation_step
+
         # Color and Opacity processing
         def apply_opacity(color_tuple, opacity):
             r, g, b = color_tuple[:3]
@@ -83,14 +87,13 @@ class ShapeGeneratorPlugin(Plugin):
         final_outline = final_fill if match_fill_outline else apply_opacity(outline_color, global_opacity)
 
         # Pass 1: Pre-calculate all shape geometries
-        # We do this so randomness is consistent between fill pass and outline pass
         shapes_to_draw = []
         for i in range(count):
             if placement == "random":
                 x = rng.randint(0, w)
                 y = rng.randint(0, h)
                 s = rng.randint(int(size * 0.5), int(size * 1.5))
-                rot = rotation + (i * rotation_step)
+                rot = rotation + (i * effective_step)
                 if random_rotation:
                     rot += rng.uniform(0, 360)
             else:
@@ -99,7 +102,7 @@ class ShapeGeneratorPlugin(Plugin):
                 x = cx + (orbit_radius * math.cos(rad))
                 y = cy + (orbit_radius * math.sin(rad))
                 s = size
-                rot = rotation + (i * rotation_step)
+                rot = rotation + (i * effective_step)
                 if random_rotation:
                     rot += rng.uniform(0, 360)
 
@@ -108,21 +111,19 @@ class ShapeGeneratorPlugin(Plugin):
             shapes_to_draw.append(geo)
 
         # Pass 2: Draw all FILLS first
-        if final_fill[3] > 0: # Only draw if not fully transparent
+        if final_fill[3] > 0:
             for geo in shapes_to_draw:
                 if shape == "circle":
                     draw.ellipse(geo, fill=final_fill, outline=None)
                 else:
                     draw.polygon(geo, fill=final_fill, outline=None)
 
-        # Pass 3: Draw all OUTLINES last (so they are on top of all fills)
+        # Pass 3: Draw all OUTLINES last (on top of all fills)
         if outline_width > 0:
             for geo in shapes_to_draw:
                 if shape == "circle":
                     draw.ellipse(geo, fill=None, outline=final_outline, width=outline_width)
                 else:
-                    # draw.polygon doesn't always handle thick outlines perfectly, 
-                    # so we draw a line loop for better results with width
                     draw.polygon(geo, fill=None, outline=final_outline, width=outline_width)
 
         return Image.alpha_composite(base, overlay)
@@ -135,7 +136,7 @@ class ShapeGeneratorPlugin(Plugin):
         ctx.register_filter(
             "Shape Generator",
             self.apply,
-            category="Generators",
+            category="Rouge",
             settings=[
                 Setting(
                     name="shape",
@@ -188,10 +189,16 @@ class ShapeGeneratorPlugin(Plugin):
                     step=1.0,
                 ),
                 Setting(
+                    name="auto_spread",
+                    type="bool",
+                    default=True,
+                    label="Auto Spread  (180° ÷ count — makes star shapes)",
+                ),
+                Setting(
                     name="rotation_step",
                     type="float",
                     default=45.0,
-                    label="Rotation Step (Star Effect)",
+                    label="Rotation Step  (manual, when Auto Spread is off)",
                     min=0.0,
                     max=180.0,
                     step=0.5,

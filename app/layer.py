@@ -147,6 +147,46 @@ class LayerStack:
                 result = self._blend_onto(result, layer)
         return result
 
+    def merge_down(self, index: int) -> Optional[int]:
+        """Merge layer at `index` onto layer at `index-1`. Returns new active index or None."""
+        if not (1 <= index < len(self.layers)):
+            return None
+        below = self.layers[index - 1]
+        top = self.layers[index]
+        if below.locked:
+            return None
+        base = self._positioned(below)
+        merged = self._blend_onto(base, top)
+        below.image = merged
+        below.offset = (0, 0)
+        below.blend_mode = "Normal"
+        below.opacity = 1.0
+        below.visible = True
+        self.layers.pop(index)
+        self.active_index = index - 1
+        self.invalidate_cache()
+        return self.active_index
+
+    def merge_up(self, index: int) -> Optional[int]:
+        """Merge layer at `index` onto layer at `index+1`. Returns new active index or None."""
+        if not (0 <= index < len(self.layers) - 1):
+            return None
+        above = self.layers[index + 1]
+        bottom = self.layers[index]
+        if above.locked:
+            return None
+        base = self._positioned(bottom)
+        merged = self._blend_onto(base, above)
+        above.image = merged
+        above.offset = (0, 0)
+        above.blend_mode = "Normal"
+        above.opacity = 1.0
+        above.visible = True
+        self.layers.pop(index)
+        self.active_index = index
+        self.invalidate_cache()
+        return self.active_index
+
     def resize_canvas(self, width: int, height: int) -> None:
         self.width = width
         self.height = height

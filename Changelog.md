@@ -1,5 +1,84 @@
 # Changelog
 
+## 2026-05-03 (round 33) — 4 updates
+
+### Added
+1. **Layer panel drag-and-drop reorder.** Dragging a row in the layer list
+   reorders the stack live (UI rows are top-first, so the move is
+   inverted into stack indices before applying via `LayerStack.move`).
+   Internal-only drag/drop with single-selection guards keep the existing
+   ▲/▼ buttons and click-to-activate behavior intact
+   (`app/ui/layer_panel.py`).
+2. **Move tool drags selected pixels when a selection is active.** Press
+   inside (or anywhere on canvas while a selection is set) lifts the
+   masked pixels off the active layer into a floating buffer; drag
+   translates both the lifted pixels and the selection mask; release
+   commits the new position via a "Move selection" history snapshot.
+   With no selection, dragging still pans `layer.offset` as before.
+   Removed the old `Move → Sel Transform` redirect since `MoveTool`
+   handles selection lifting internally now (`app/tools.py`,
+   `app/main_window.py`).
+3. **Text tool: multi-line + per-click new layer + Tab-to-edit.**
+   - Each canvas click commits the previous text layer and starts a new
+     one at the click point (no more reusing the same layer across
+     clicks).
+   - `TextTool.rerender` uses `ImageDraw.multiline_text` so embedded
+     newlines render as separate lines.
+   - Text panel switched from `QLineEdit` to `QPlainTextEdit` with
+     `setTabChangesFocus(True)` so Enter inserts a newline and Tab
+     jumps focus instead of inserting whitespace.
+   - Pressing Tab while the Text tool is active focuses the Text panel
+     editor automatically; new layers also reset the editor and steal
+     focus via `TextPanel.reset_for_new_layer()`. New `on_layer_created`
+     and `on_layer_committed` hooks let the host wire panel sync and
+     history labels (`app/tools.py`, `app/ui/text_panel.py`,
+     `app/main_window.py`).
+
+### Fixed
+4. **Lag on Fill / Select-All.** Added `Selection.is_full` and a
+   fast-path in `_selection_at_layer` / `_clip_layer_to_selection`:
+   when the active selection covers the whole canvas and the layer
+   exactly fills it, paint and clip ops skip the per-stamp /
+   per-op selection composite entirely. `Selection.rect` and
+   `Selection.from_mask` set the flag automatically when bounds match
+   (`app/project.py`, `app/tools.py`).
+
+## 2026-05-03 (round 32) — 1 update
+
+### Fixed
+1. **Fill / Line / Rectangle / Ellipse now clip to active selection.**
+   Brought direct-draw tools in line with Brush, Eraser, Gradient, Blur,
+   Sharpen, Smudge, and Clone Stamp — paint outside the selection mask
+   is reverted from a pre-op snapshot. New `_clip_layer_to_selection`
+   helper composites `layer.image` against the snapshot through the
+   selection mask. Applied in `FillTool.press`, `LineTool.move`, and
+   `_ShapeTool._render` (`app/tools.py`).
+
+## 2026-05-03 (round 31) — 3 updates
+
+### Added
+1. **Magic Wand "select open area".** Clicking a fully transparent pixel
+   now flood-fills the connected empty region instead of clearing the
+   selection. `MagicWandTool.press` no longer early-returns on alpha=0;
+   the existing transparent-target branch in `_sample_and_commit`
+   handles flood + Ctrl-select-similar across the whole layer
+   (`app/tools.py`).
+
+### Fixed
+2. **`Setting.__init__` now tolerates unknown kwargs.** When a plugin is
+   hot-reloaded against a stale cached `app.plugin_api` module, new
+   `Setting` fields (e.g. `rows`, `monospace`) no longer crash plugin
+   registration with `TypeError: unexpected keyword argument`. Unknown
+   kwargs are stripped and a warning recommends an app restart
+   (`app/plugin_api.py`).
+
+### Verified
+3. **Session save/load on close/open already wired.** `save_session` is
+   called from `MainWindow.closeEvent`; `load_session` runs in
+   `__init__`. Layers, blend modes, opacity, visibility, offsets, and
+   active index round-trip via `session/proj_NNN/`
+   (`app/session.py`, `app/main_window.py:117,2141`).
+
 ## 2026-05-02 (round 30) — 6 updates
 
 ### Added

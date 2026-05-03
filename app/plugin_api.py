@@ -23,7 +23,7 @@ crash log so the host application stays alive.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
@@ -60,6 +60,27 @@ class Setting:
     # --- text/code editor hints (used by the settings dialog for type="text") ---
     rows: int = 5                 # visible line count; dialog will size the widget to match
     monospace: bool = False       # if True, renders with a fixed-width font (code editing)
+
+
+_setting_orig_init = Setting.__init__
+
+
+def _setting_tolerant_init(self, *args, **kwargs):
+    valid = {f.name for f in fields(Setting)}
+    unknown = [k for k in kwargs if k not in valid]
+    for k in unknown:
+        kwargs.pop(k)
+    _setting_orig_init(self, *args, **kwargs)
+    if unknown:
+        import warnings
+        warnings.warn(
+            f"Setting(name={kwargs.get('name', args[0] if args else '?')!r}): "
+            f"ignored unknown kwargs {unknown} — likely stale plugin_api module, restart app",
+            stacklevel=2,
+        )
+
+
+Setting.__init__ = _setting_tolerant_init
 
 
 class CanvasLike(Protocol):
