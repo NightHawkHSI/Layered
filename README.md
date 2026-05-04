@@ -121,8 +121,9 @@ python main.py
 ---
 
 ## Bundled Plugins
-
-Layered ships with 17 working plugins in `Plugins/` — use them as-is or read the source as a template:
+                    * - (Number May Change)
+                    |
+Layered ships with 17* working plugins in `Plugins/` — use them as-is or read the source as a template:
 
 | Plugin | Type | What it does |
 |---|---|---|

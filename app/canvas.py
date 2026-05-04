@@ -60,10 +60,11 @@ class Canvas(QWidget):
 
     # --- public API ---
 
-    def set_layer_stack(self, stack: LayerStack) -> None:
+    def set_layer_stack(self, stack: LayerStack, reset_view: bool = True) -> None:
         self.layer_stack = stack
-        self._auto_fit = True
-        self._pan = QPoint(0, 0)
+        if reset_view:
+            self._auto_fit = True
+            self._pan = QPoint(0, 0)
         self.refresh()
 
     def set_tool(self, tool: Optional[Tool]) -> None:

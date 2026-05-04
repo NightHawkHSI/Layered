@@ -34,12 +34,14 @@ def main() -> int:
         from app.main_window import ICON_PATH, ICON_PNG_PATH, MainWindow
     except Exception:
         report = _emergency_crash(*sys.exc_info())
-        sys.stderr.write(
+        msg = (
             f"Layered failed to start. Crash report: {report}\n"
             f"Likely cause: missing dependency. Run:\n"
             f"  py -3 -m pip install -r requirements.txt\n"
         )
-        traceback.print_exc()
+        if sys.stderr is not None:
+            sys.stderr.write(msg)
+            traceback.print_exc()
         return 2
 
     install_excepthook()

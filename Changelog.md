@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-05-03 (round 34) — 3 updates
+
+### Added
+1. **Plugin folder subfolder support.** `Plugins/` may now contain
+   category folders (e.g. `Game Dev`, `Color`, `Lighting`, `Stylize`,
+   `Distortion`, `Utility`, `ETC`). `.py` files inside such a folder
+   register with that folder name as their default menu category, so
+   filters/actions group under a submenu without each plugin having to
+   declare `category=`. Nested folders join with " / ". Folders that
+   contain `__init__.py` are still treated as plugin packages, not
+   category buckets (`app/plugin_loader.py`).
+
+### Fixed
+2. **Ctrl+Z no longer recenters the canvas view.** `Canvas.set_layer_stack`
+   now takes `reset_view: bool = True`; the undo/redo/history-jump path
+   (`_apply_snapshot_stack`) passes `reset_view=False` so pan/zoom stay
+   put across snapshot swaps. Project-tab switches keep the previous
+   reset behavior (`app/canvas.py`, `app/main_window.py`).
+3. **Text tool font selection actually applies the chosen family.**
+   `TextTool._load_font` now resolves the Qt family name to the real
+   `.ttf`/`.otf` via the Windows font registry
+   (`HKLM`/`HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts`)
+   instead of guessing `<family>.ttf`. Cached on first lookup; falls
+   back to the previous filename guesses and PIL's default
+   (`app/tools.py`).
+
 ## 2026-05-03 (round 33) — 4 updates
 
 ### Added

@@ -635,7 +635,7 @@ class MainWindow(QMainWindow):
         proj = self.current()
         proj.stack = new_stack
         proj.dirty = True
-        self.canvas.set_layer_stack(new_stack)
+        self.canvas.set_layer_stack(new_stack, reset_view=False)
         self.layer_panel.stack = new_stack
         self.layer_panel.refresh()
         self.canvas.refresh()

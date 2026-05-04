@@ -88,18 +88,35 @@ def _wrap_action(plugin_logger, fn: PluginAction) -> PluginAction:
     return safe
 
 
-def discover_plugin_files(plugins_dir: Path) -> list[Path]:
+def discover_plugin_files(plugins_dir: Path) -> list[tuple[Path, Optional[str]]]:
+    """Return (path, folder_category) tuples for every plugin under
+    `plugins_dir`. A subfolder without `__init__.py` is treated as a
+    category bucket — its `.py` files are discovered with the folder
+    name as their default category. Nested category folders join with
+    " / " (e.g. "Game Dev / Tilesets").
+    """
     if not plugins_dir.exists():
         return []
-    files: list[Path] = []
-    for entry in sorted(plugins_dir.iterdir()):
-        if entry.name.startswith(("_", ".")):
-            continue
-        if entry.is_file() and entry.suffix == ".py":
-            files.append(entry)
-        elif entry.is_dir() and (entry / "__init__.py").exists():
-            files.append(entry / "__init__.py")
-    return files
+    out: list[tuple[Path, Optional[str]]] = []
+
+    def _scan(d: Path, category: Optional[str]) -> None:
+        for entry in sorted(d.iterdir()):
+            if entry.name.startswith(("_", ".")):
+                continue
+            if entry.is_file() and entry.suffix == ".py":
+                out.append((entry, category))
+            elif entry.is_dir():
+                init = entry / "__init__.py"
+                if init.exists():
+                    # Plugin package — keep current category (don't recurse
+                    # into its internals).
+                    out.append((init, category))
+                else:
+                    sub = entry.name if category is None else f"{category} / {entry.name}"
+                    _scan(entry, sub)
+
+    _scan(plugins_dir, None)
+    return out
 
 
 def _load_module(path: Path):
@@ -124,7 +141,7 @@ def load_plugins(
     files = discover_plugin_files(plugins_dir)
     log.info("Discovered %d plugin file(s) in %s", len(files), plugins_dir)
 
-    for path in files:
+    for path, folder_category in files:
         loaded = LoadedPlugin(name=path.stem, module_path=path, plugin=None)  # type: ignore
         plugin_logger = get_plugin_logger(path.stem)
         try:
@@ -168,24 +185,26 @@ def load_plugins(
 
             def _register_filter(name: str, fn: PluginFilter, settings: Optional[list[Setting]] = None,
                                  category: Optional[str] = None,
-                                 _l=loaded, _pl=plugin_logger):
+                                 _l=loaded, _pl=plugin_logger, _fc=folder_category):
                 wrapped = _wrap_filter(_pl, fn)
-                entry = FilterEntry(fn=wrapped, settings=list(settings or []), category=category)
+                cat = category if category is not None else _fc
+                entry = FilterEntry(fn=wrapped, settings=list(settings or []), category=cat)
                 _l.filters[name] = entry
                 registry.filters[name] = entry
                 _pl.info("Registered filter %s%s%s", name,
-                         f" in {category!r}" if category else "",
+                         f" in {cat!r}" if cat else "",
                          " with settings" if entry.settings else "")
 
             def _register_action(name: str, fn: PluginAction, settings: Optional[list[Setting]] = None,
                                  category: Optional[str] = None,
-                                 _l=loaded, _pl=plugin_logger):
+                                 _l=loaded, _pl=plugin_logger, _fc=folder_category):
                 wrapped = _wrap_action(_pl, fn)
-                entry = ActionEntry(fn=wrapped, settings=list(settings or []), category=category)
+                cat = category if category is not None else _fc
+                entry = ActionEntry(fn=wrapped, settings=list(settings or []), category=cat)
                 _l.actions[name] = entry
                 registry.actions[name] = entry
                 _pl.info("Registered action %s%s%s", name,
-                         f" in {category!r}" if category else "",
+                         f" in {cat!r}" if cat else "",
                          " with settings" if entry.settings else "")
 
             ctx = PluginContext(

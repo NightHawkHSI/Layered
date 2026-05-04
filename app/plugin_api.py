@@ -1,6 +1,11 @@
 """Public plugin API.
 
 Plugins subclass `Plugin` and are loaded from the top-level `Plugins/` folder.
+The loader recurses into subfolders: a folder without `__init__.py` is a
+category bucket, and its `.py` files register with that folder name as their
+default menu category (overridable per-call via `category=`). Folders that
+do have `__init__.py` are treated as plugin packages.
+
 The `register()` method is called once at load time with a `PluginContext`
 that exposes the editor's canvas, layer stack, tool registry, menus, history,
 selection, events, panels, config, clipboard, and a sandboxed logger.
@@ -17,6 +22,11 @@ Settings: each filter or action can declare a list of `Setting` specs. When
 the user clicks a filter / action in the menus, the host pops a generic
 settings dialog built from those specs and passes the values as keyword
 arguments to the callback. Plugins with no settings are invoked directly.
+
+Categories: `register_filter` / `register_action` accept `category=`. Pass a
+label to group the entry under a submenu, `""` to force top-level, or omit
+it to inherit the parent folder name (e.g. `Plugins/Lighting/foo.py`
+defaults to the "Lighting" submenu).
 
 Failures inside any plugin call are caught by the loader and routed to the
 crash log so the host application stays alive.

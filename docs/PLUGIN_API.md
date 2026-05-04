@@ -56,8 +56,10 @@ class GrayscalePlugin(Plugin):
 
   Pass `category="Color"` (or any label) to nest the entry under that
   submenu in the Filters / Plugins menu. Without `category`, the entry
-  sits at the top level. Two plugins that pass the same `category`
-  share a submenu.
+  inherits the name of the folder the plugin file lives in (e.g. a
+  plugin under `Plugins/Lighting/` defaults to `category="Lighting"`).
+  Pass `category=""` to force a top-level entry. Two plugins that pass
+  the same `category` share a submenu.
 
 ### Layers
 

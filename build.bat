@@ -1,160 +1,164 @@
 @echo off
-REM ============================================================================
-REM Layered build script.
-REM Creates ./GitHub/Release  and  ./GitHub/Git Main
-REM   Git Main : clean copy of source ready to push to a git repo
-REM   Release  : Layered.exe + Plugins/
-REM Verbose tool output captured to ./GitHub/build-error.log
-REM Stage progress (0-100%) printed live to the console.
-REM ============================================================================
-
 setlocal EnableDelayedExpansion
+
+REM Fix for garbage characters (sets terminal to UTF-8)
+chcp 65001 >nul
+
+REM ============================================================================
+REM ANSI COLOR SETUP
+REM ============================================================================
+for /F %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
+set "G=%ESC%[92m"
+set "Y=%ESC%[93m"
+set "B=%ESC%[94m"
+set "R=%ESC%[91m"
+set "C=%ESC%[96m"
+set "W=%ESC%[97m"
+set "N=%ESC%[0m"
+
 pushd "%~dp0"
 
-set "ROOT=%CD%"
+REM ============================================================================
+REM PATH CONFIGURATION (Quoted to handle spaces)
+REM ============================================================================
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
 set "OUT=%ROOT%\GitHub"
 set "RELEASE=%OUT%\Release"
 set "GITMAIN=%OUT%\Git Main"
-
-if not exist "%OUT%"      mkdir "%OUT%"
-if not exist "%RELEASE%"  mkdir "%RELEASE%"
-if not exist "%GITMAIN%"  mkdir "%GITMAIN%"
-
 set "LOGFILE=%OUT%\build-error.log"
+set "VENV=%OUT%\.build_venv"
+set "BUILDTMP=%OUT%\.build_work"
+
+cls
+echo %C%============================================================================
+echo   %W%LAYERED %C%BUILD SYSTEM %N%                                     
+echo %C%============================================================================%N%
+echo   %W%Log File:%N%  %Y%"%LOGFILE%"%N%
+echo   %W%Project:%N%   %Y%"%ROOT%"%N%
+echo %C%----------------------------------------------------------------------------%N%
+
+REM Create GitHub dir if missing
+if not exist "%OUT%" mkdir "%OUT%"
+
+REM Selective folder cleanup
+if exist "%RELEASE%" (
+    echo  %W%[%Y%^!%W%]%N% Clearing: %W%Release%N%
+    rmdir /s /q "%RELEASE%"
+)
+if exist "%GITMAIN%" (
+    echo  %W%[%Y%^!%W%]%N% Clearing: %W%Git Main%N%
+    rmdir /s /q "%GITMAIN%"
+)
+mkdir "%RELEASE%"
+mkdir "%GITMAIN%"
+
 echo === build started %DATE% %TIME% === > "%LOGFILE%"
 
-set "T0=%TIME%"
-call :stage   0 "starting"
-call :stage   5 "mirroring source -> Git Main"
+REM ============================================================================
+REM BUILD PIPELINE
+REM ============================================================================
+
+call :stage 10 "Mirroring Source"
+echo    %B%-%N% Mirroring to: %Y%Git Main%N%
 robocopy "%ROOT%" "%GITMAIN%" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "%OUT%" "logs" "__pycache__" ".git" ".idea" ".vscode" ".venv" "venv" ".vs" "build" "dist" /XF "*.pyc" "*.pyo" "*.log" "Bugs.txt" "*.spec" >> "%LOGFILE%" 2>&1
-set RC=%ERRORLEVEL%
-if %RC% GEQ 8 (
-    call :fail "robocopy failed (rc=%RC%)"
-    goto :end
-)
+if %ERRORLEVEL% GEQ 8 goto :fail_robocopy
 
-call :stage  15 "checking python launcher"
+call :stage 25 "Python Environment"
 set "PY=py"
-%PY% --version >nul 2>&1
-if errorlevel 1 (
-    set "PY=python"
-    %PY% --version >nul 2>&1
-    if errorlevel 1 (
-        call :fail "no python launcher found. install Python from python.org"
-        goto :end
-    )
+%PY% --version >nul 2>&1 || set "PY=python"
+echo    %B%-%N% Using Launcher: %G%%PY%%N%
+echo    %B%-%N% Creating sandbox venv...
+"%PY%" -m venv "%VENV%" >> "%LOGFILE%" 2>&1
+set "PY_BIN=%VENV%\Scripts\python.exe"
+
+call :stage 45 "Installing Dependencies"
+echo    %B%-%N% Upgrading %G%pip%N%...
+"%PY_BIN%" -m pip install --upgrade pip >> "%LOGFILE%" 2>&1
+
+if exist "%ROOT%\requirements.txt" (
+    echo    %B%^>%N% Installing from %C%requirements.txt%N%...
+    "%PY_BIN%" -m pip install -r "%ROOT%\requirements.txt" >> "%LOGFILE%" 2>&1
+    if errorlevel 1 goto :fail_pyinstaller
 )
-echo [build] using launcher: %PY% >> "%LOGFILE%"
+echo    %B%^>%N% Package: %C%pyinstaller%N%
+"%PY_BIN%" -m pip install pyinstaller >> "%LOGFILE%" 2>&1
 
-call :stage  20 "upgrading pip"
-%PY% -m pip install --upgrade pip >> "%LOGFILE%" 2>&1
-if errorlevel 1 (
-    call :fail "pip upgrade failed"
-    goto :end
+call :stage 60 "Asset Processing"
+if exist "%ROOT%\Icon.png" if not exist "%ROOT%\Icon.ico" (
+    echo    %B%-%N% Converting %C%Icon.png%N%...
+    "%PY_BIN%" -c "from PIL import Image; im=Image.open(r'%ROOT%\Icon.png').convert('RGBA'); im.save(r'%ROOT%\Icon.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" >> "%LOGFILE%" 2>&1
 )
-
-call :stage  35 "installing requirements"
-%PY% -m pip install -r "%ROOT%\requirements.txt" >> "%LOGFILE%" 2>&1
-if errorlevel 1 (
-    call :fail "requirements install failed"
-    goto :end
-)
-
-call :stage  50 "installing PyInstaller"
-%PY% -m pip install pyinstaller >> "%LOGFILE%" 2>&1
-if errorlevel 1 (
-    call :fail "pyinstaller install failed"
-    goto :end
-)
-
-set "BUILDTMP=%OUT%\_pyinstaller"
-if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
-
-if not exist "%ROOT%\Icon.ico" if exist "%ROOT%\Icon.png" (
-    call :stage 55 "generating Icon.ico from Icon.png"
-    %PY% -c "from PIL import Image; im=Image.open(r'%ROOT%\Icon.png').convert('RGBA'); im.save(r'%ROOT%\Icon.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" >> "%LOGFILE%" 2>&1
-    if errorlevel 1 (
-        call :fail "icon generation failed"
-        goto :end
-    )
-)
-
-set ICONARG=
+set "ICONARG="
 if exist "%ROOT%\Icon.ico" set ICONARG=--icon="%ROOT%\Icon.ico"
 
-call :stage  60 "freezing exe with PyInstaller (this is the slow step)"
-%PY% -m PyInstaller --noconfirm --onefile --windowed --name Layered ^
+call :stage 75 "Compilation"
+echo    %W%[%R%WAIT%W%] %Y%PyInstaller is freezing Layered.exe...%N%
+if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
+"%PY_BIN%" -m PyInstaller --noconfirm --onefile --windowed --name Layered ^
     --collect-submodules app ^
     --collect-submodules PIL ^
+    --collect-all PyQt6 ^
     %ICONARG% ^
     --distpath "%RELEASE%" ^
     --workpath "%BUILDTMP%\build" ^
     --specpath "%BUILDTMP%" ^
     "%ROOT%\main.py" >> "%LOGFILE%" 2>&1
-if errorlevel 1 (
-    call :fail "pyinstaller failed (see log tail below)"
-    echo --- log tail ---
-    powershell -NoProfile -Command "Get-Content -Tail 40 '%LOGFILE%'"
-    goto :end
+if errorlevel 1 goto :fail_pyinstaller
+
+call :stage 95 "Final Assembly"
+if exist "%ROOT%\Plugins" (
+    echo    %B%-%N% Syncing: %Y%Plugins%N%
+    robocopy "%ROOT%\Plugins" "%RELEASE%\Plugins" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
+)
+for %%F in ("Icon.ico", "Icon.png", "README.md", "Changelog.md") do (
+    if exist "%ROOT%\%%~F" (
+        echo    %B%^>%N% Copying: %W%%%~F%N%
+        copy /Y "%ROOT%\%%~F" "%RELEASE%\" >nul
+    )
 )
 
-call :stage  92 "copying Plugins next to exe"
-robocopy "%ROOT%\Plugins" "%RELEASE%\Plugins" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
-if %ERRORLEVEL% GEQ 8 (
-    call :fail "plugin copy failed"
-    goto :end
-)
-
-call :stage  96 "copying icon, README, changelog"
-if exist "%ROOT%\Icon.ico"     copy /Y "%ROOT%\Icon.ico"     "%RELEASE%\Icon.ico"     >nul
-if exist "%ROOT%\Icon.png"     copy /Y "%ROOT%\Icon.png"     "%RELEASE%\Icon.png"     >nul
-if exist "%ROOT%\README.md"    copy /Y "%ROOT%\README.md"    "%RELEASE%\README.md"    >nul
-if exist "%ROOT%\Changelog.md" copy /Y "%ROOT%\Changelog.md" "%RELEASE%\Changelog.md" >nul
-
+call :stage 100 "Cleaning Up"
 if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
+if exist "%VENV%" rmdir /s /q "%VENV%"
 
-call :stage 100 "done"
-echo === build ended %DATE% %TIME% (ok) === >> "%LOGFILE%"
 echo.
-echo [build] OK
-echo   Git Main : %GITMAIN%
-echo   Release  : %RELEASE%\Layered.exe
-echo   Log      : %LOGFILE%
+echo %G%============================================================================
+echo   BUILD SUCCESSFUL
+echo %G%============================================================================%N%
+echo   %W%Release EXE:%N%  %C%"%RELEASE%\Layered.exe"%N%
+echo   %W%Git Source:%N%   %C%"%GITMAIN%"%N%
 echo.
 pause
 popd
 endlocal & exit /b 0
 
-
 :stage
-REM Args: %1 = percent (1-3 chars), %2..* = message
 set "PCT=%~1"
-shift
-set "MSG=%~1"
-:stage_concat
-shift
-if not "%~1"=="" (
-    set "MSG=!MSG! %~1"
-    goto :stage_concat
-)
-REM Right-align percent in 3 cols.
-set "PADP=  %PCT%"
-set "PADP=!PADP:~-3!"
-echo [!PADP!%%] !MSG!
-echo [!PADP!%%] !MSG! >> "%LOGFILE%"
-goto :eof
-
-
-:fail
+set "MSG=%~2"
+set /a "filled=%PCT% / 4"
+set /a "empty=25 - %filled%"
+set "BAR="
+for /L %%i in (1,1,%filled%) do set "BAR=!BAR!█"
+for /L %%i in (1,1,%empty%) do set "BAR=!BAR!░"
 echo.
-echo [build] FAILED: %~1
-echo [build] log: %LOGFILE%
-echo === build ended %DATE% %TIME% (FAILED: %~1) === >> "%LOGFILE%"
-goto :eof
+echo  %W%%BAR% %PCT%%%  %C%%MSG%%N%
+exit /b
 
-
-:end
+:fail_robocopy
 echo.
+echo  %R%[ERROR]%N% Robocopy failed.
+goto :fail_end
+
+:fail_pyinstaller
+echo.
+echo  %R%[ERROR]%N% PyInstaller failed. 
+powershell -NoProfile -Command "Get-Content -Tail 10 '%LOGFILE%'"
+goto :fail_end
+
+:fail_end
+echo %R%----------------------------------------------------------------------------
+echo   BUILD FAILED. Check log: "%LOGFILE%"
+echo ----------------------------------------------------------------------------%N%
 pause
-popd
-endlocal & exit /b 1
+exit /b 1

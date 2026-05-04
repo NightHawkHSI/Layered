@@ -9,6 +9,8 @@ flow control rather than the previous hard-line behavior.
 """
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
@@ -16,6 +18,64 @@ import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .layer import Layer
+
+
+_FONT_PATH_CACHE: dict[str, str] = {}
+_FONT_CACHE_BUILT = False
+
+
+def _build_windows_font_cache() -> None:
+    # Map lowercase family name -> absolute font file path by reading
+    # the Windows font registry. Includes per-user installs.
+    global _FONT_CACHE_BUILT
+    if _FONT_CACHE_BUILT or sys.platform != "win32":
+        _FONT_CACHE_BUILT = True
+        return
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        _FONT_CACHE_BUILT = True
+        return
+    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    hives = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+    ]
+    for hive, sub in hives:
+        try:
+            with winreg.OpenKey(hive, sub) as k:
+                i = 0
+                while True:
+                    try:
+                        name, value, _ = winreg.EnumValue(k, i)
+                    except OSError:
+                        break
+                    i += 1
+                    family = name.split("(")[0].strip().lower()
+                    # Strip trailing style words so "Arial Bold" still resolves
+                    # via "Arial Bold" entry; we keep the registry-entry key
+                    # (the user-selected family already includes style).
+                    path = value if os.path.isabs(value) else os.path.join(fonts_dir, value)
+                    _FONT_PATH_CACHE.setdefault(family, path)
+        except OSError:
+            continue
+    _FONT_CACHE_BUILT = True
+
+
+def _resolve_windows_font(family: str) -> Optional[str]:
+    _build_windows_font_cache()
+    key = family.strip().lower()
+    if key in _FONT_PATH_CACHE:
+        return _FONT_PATH_CACHE[key]
+    # Try without trailing style words ("Arial Black" -> "Arial Black" first,
+    # then progressively shorter).
+    parts = key.split()
+    while len(parts) > 1:
+        parts.pop()
+        cand = " ".join(parts)
+        if cand in _FONT_PATH_CACHE:
+            return _FONT_PATH_CACHE[cand]
+    return None
 
 
 Color = Tuple[int, int, int, int]
@@ -1509,8 +1569,15 @@ class TextTool(Tool):
         return self._commit_active()
 
     def _load_font(self, family: str, size: int):
-        # Try a TrueType font; fall back to default. Allow selecting by family
-        # name (Qt's font-name) by mapping to common TTFs on Windows.
+        # Resolve Qt family name to a real .ttf/.otf via the Windows font
+        # registry; falls back to common files and PIL's default.
+        if family:
+            path = _resolve_windows_font(family)
+            if path:
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    pass
         candidates = []
         if family:
             candidates.append(family)
