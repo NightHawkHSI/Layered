@@ -48,7 +48,8 @@
 
 ---
 
-![alt text]([image_url](https://imgur.com/a/eDqi8kJ))
+![Preview](https://i.imgur.com/ZvuiuaP.png)
+
 ## Table of Contents
 
 - [What is Layered?](#what-is-layered)
