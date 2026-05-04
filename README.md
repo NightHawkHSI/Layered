@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Icon.png" width="96" alt="Layered logo"/>
+<img src="Icon.png"  alt="Layered logo"/>
 
 <h1>🎨 Layered</h1>
 <p><b>Modern Python image &amp; game-asset editor</b></p>
