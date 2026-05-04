@@ -1,190 +1,218 @@
 <div align="center">
 
-<img src="Icon.png" align="center" width="96" alt="Layered logo"/>
+<br/>
 
-<h1>🎨 Layered</h1>
-<p><b>Modern Python image &amp; game-asset editor</b></p>
-<p>Real-time canvas · Non-destructive layers · Plugin-powered workflow</p>
+<img src="Icon.png" width="110" alt="Layered logo"/>
 
-<!-- Hero Badges -->
-<p>
-<a href="https://github.com/NightHawkHSI/Layered/releases/latest">
-  <img src="https://img.shields.io/github/v/release/NightHawkHSI/Layered?style=for-the-badge&label=Latest%20Release&color=2ea44f">
-</a>
-<img src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python&logoColor=white">
-<img src="https://img.shields.io/badge/Qt-PyQt6-41cd52?style=for-the-badge&logo=qt&logoColor=white">
-<img src="https://img.shields.io/github/license/NightHawkHSI/Layered?style=for-the-badge">
-</p>
+<br/>
 
-<!-- Quick Actions -->
-<p>
-<a href="https://github.com/NightHawkHSI/Layered/releases/latest">
-  <img src="https://img.shields.io/badge/⬇%20Download-Latest%20Release-2ea44f?style=for-the-badge">
-</a>
-<a href="https://github.com/NightHawkHSI/Layered/issues/new?labels=bug">
-  <img src="https://img.shields.io/badge/🐞%20Report%20Bug-Issues-red?style=for-the-badge">
-</a>
-<a href="https://github.com/NightHawkHSI/Layered/issues/new?labels=enhancement">
-  <img src="https://img.shields.io/badge/💡%20Request%20Feature-Issues-blue?style=for-the-badge">
-</a>
-<a href="docs/PLUGIN_API.md">
-  <img src="https://img.shields.io/badge/🔌%20Plugin%20API-Docs-purple?style=for-the-badge">
-</a>
-</p>
+# LAYERED
 
-<!-- Stats -->
-<p>
-<img src="https://img.shields.io/github/stars/NightHawkHSI/Layered?style=flat-square&label=Stars&color=yellow">
-<img src="https://img.shields.io/github/forks/NightHawkHSI/Layered?style=flat-square&label=Forks&color=orange">
-<img src="https://img.shields.io/github/downloads/NightHawkHSI/Layered/total?style=flat-square&label=Downloads&color=blue">
-<img src="https://img.shields.io/github/issues/NightHawkHSI/Layered?style=flat-square&label=Issues&color=red">
-<img src="https://img.shields.io/github/last-commit/NightHawkHSI/Layered?style=flat-square&label=Last%20Commit">
-<img src="https://img.shields.io/github/repo-size/NightHawkHSI/Layered?style=flat-square&label=Repo%20Size">
-<img src="https://komarev.com/ghpvc/?username=NightHawkHSI&repo=Layered&style=flat-square&label=Views&color=brightgreen">
-</p>
+### Modern Python image & game-asset editor
 
+*Real-time canvas · Non-destructive layers · Plugin-powered workflow*
+
+<br/>
+
+[![Release](https://img.shields.io/github/v/release/NightHawkHSI/Layered?style=for-the-badge&label=Latest%20Release&color=22c55e&labelColor=0d1117)](https://github.com/NightHawkHSI/Layered/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3b82f6?style=for-the-badge&logo=python&logoColor=white&labelColor=0d1117)](https://python.org)
+[![PyQt6](https://img.shields.io/badge/PyQt6-Qt%20Framework-41cd52?style=for-the-badge&logo=qt&logoColor=white&labelColor=0d1117)](https://pypi.org/project/PyQt6/)
+[![License](https://img.shields.io/github/license/NightHawkHSI/Layered?style=for-the-badge&labelColor=0d1117&color=a855f7)](LICENSE)
+
+<br/>
+
+[![Download](https://img.shields.io/badge/⬇%20%20Download%20Now-Latest%20Release-22c55e?style=for-the-badge&labelColor=166534)](https://github.com/NightHawkHSI/Layered/releases/latest)
+[![Bug Report](https://img.shields.io/badge/🐞%20%20Report%20a%20Bug-Open%20Issue-ef4444?style=for-the-badge&labelColor=7f1d1d)](https://github.com/NightHawkHSI/Layered/issues/new?labels=bug)
+[![Feature Request](https://img.shields.io/badge/💡%20%20Request%20Feature-Open%20Issue-3b82f6?style=for-the-badge&labelColor=1e3a5f)](https://github.com/NightHawkHSI/Layered/issues/new?labels=enhancement)
+[![Plugin Docs](https://img.shields.io/badge/🔌%20%20Plugin%20API-Read%20Docs-a855f7?style=for-the-badge&labelColor=3b0764)](docs/PLUGIN_API.md)
+
+<br/>
+
+![Stars](https://img.shields.io/github/stars/NightHawkHSI/Layered?style=flat-square&label=⭐%20Stars&color=facc15&labelColor=1c1917)
+![Forks](https://img.shields.io/github/forks/NightHawkHSI/Layered?style=flat-square&label=🍴%20Forks&color=fb923c&labelColor=1c1917)
+![Downloads](https://img.shields.io/github/downloads/NightHawkHSI/Layered/total?style=flat-square&label=📦%20Downloads&color=60a5fa&labelColor=1c1917)
+![Issues](https://img.shields.io/github/issues/NightHawkHSI/Layered?style=flat-square&label=🔴%20Issues&color=f87171&labelColor=1c1917)
+![Last Commit](https://img.shields.io/github/last-commit/NightHawkHSI/Layered?style=flat-square&label=🕐%20Last%20Commit&labelColor=1c1917)
+![Repo Size](https://img.shields.io/github/repo-size/NightHawkHSI/Layered?style=flat-square&label=💾%20Size&labelColor=1c1917)
+[![Views](https://komarev.com/ghpvc/?username=NightHawkHSI&repo=Layered&style=flat-square&label=👁%20Views&color=34d399&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered)
 
 </div>
 
----
+<br/>
 
 ![Preview](https://i.imgur.com/ZvuiuaP.png)
 
-## Table of Contents
-
-- [What is Layered?](#what-is-layered)
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Bundled Plugins](#bundled-plugins)
-- [Project Structure](#project-structure)
-- [Writing a Plugin](#writing-a-plugin)
-- [Blend Modes](#blend-modes)
-- [Logging &amp; Crash Reports](#logging--crash-reports)
-- [Building a Standalone EXE](#building-a-standalone-exe)
-- [Contributing](#contributing)
-- [License](#license)
+<br/>
 
 ---
 
-## What is Layered?
+## 📖 Table of Contents
 
-Layered is an open-source image and game-asset editor built in Python with PyQt6, inspired by Paint.NET. It gives you a familiar non-destructive workflow — draw, stack layers, blend, export — without leaving your Python toolchain.
-
-It's purpose-built for **game asset creation**: export every layer as its own PNG with a `manifest.json` carrying offsets, blend modes, and visibility, so your engine can reassemble them at runtime.
+| | |
+|---|---|
+| [🖼 What is Layered?](#-what-is-layered) | [🧩 Blend Modes](#-blend-modes) |
+| [✨ Features](#-features) | [🪵 Logging & Crash Reports](#-logging--crash-reports) |
+| [🚀 Quick Start](#-quick-start) | [📦 Building a Standalone EXE](#-building-a-standalone-exe) |
+| [🔌 Bundled Plugins](#-bundled-plugins) | [🤝 Contributing](#-contributing) |
+| [🗂 Project Structure](#-project-structure) | [📄 License](#-license) |
+| [✍️ Writing a Plugin](#️-writing-a-plugin) | |
 
 ---
 
-## Features
+## 🖼 What is Layered?
 
-### 🎨 Drawing toolkit
-Brush, eraser, fill bucket, line, rectangle, ellipse, color picker, text — paint assets from scratch or retouch imports.
+**Layered** is an open-source image and game-asset editor built in Python with PyQt6, inspired by Paint.NET. It delivers a familiar non-destructive workflow — draw, stack layers, blend, export — without ever leaving your Python toolchain.
 
-### 🗂 Non-destructive layers
-- Per-layer opacity and visibility toggle
+> **Built for game developers.** Export every layer as its own PNG alongside a `manifest.json` carrying offsets, blend modes, and visibility — so your engine can reassemble the scene at runtime.
+
+---
+
+## ✨ Features
+
+<details open>
+<summary><b>🎨 Drawing Toolkit</b></summary>
+<br/>
+
+Brush · Eraser · Fill Bucket · Line · Rectangle · Ellipse · Color Picker · Text
+
+Paint assets from scratch or retouch imports with a full suite of drawing primitives.
+
+</details>
+
+<details open>
+<summary><b>🗂 Non-Destructive Layers</b></summary>
+<br/>
+
+- Per-layer **opacity** and **visibility** toggle
 - **9 blend modes** — Normal, Multiply, Screen, Overlay, Darken, Lighten, Add, Subtract, Difference
-- Reorder, rename, duplicate, group
-- Original pixel data is never destroyed — every operation is reversible
+- Reorder, rename, duplicate, and group layers
+- Original pixel data is **never** destroyed — every operation is fully reversible
 
-### ↶ Full undo / history
-Every brush stroke, filter, and layer op is tracked. Browse history in the side panel and jump to any prior state.
+</details>
 
-### 📦 Export
-- Flattened composite as PNG / JPEG / WEBP
-- **Per-layer PNG export** with `manifest.json` (offsets, blend modes, visibility, opacity) — drop straight into a game engine
-- Multi-project tabs — work on several files at once
+<details open>
+<summary><b>↶ Full Undo / History</b></summary>
+<br/>
 
-### 🔌 Plugin system
-Drop a `.py` file into `Plugins/`. Plugins can register **tools, filters, or menu actions**, declare typed settings (the host auto-builds a settings dialog), and run sandboxed — a crashing plugin gets logged and isolated, the editor stays alive.
+Every brush stroke, filter, and layer operation is tracked. Browse the history panel and jump to any prior state instantly.
 
-### 📋 Logging &amp; crash reports
+</details>
+
+<details open>
+<summary><b>📦 Export Formats</b></summary>
+<br/>
+
+| Format | Description |
+|---|---|
+| **PNG / JPEG / WEBP** | Flattened composite export |
+| **Per-layer PNG + `manifest.json`** | Offsets, blend modes, visibility, opacity — game-engine ready |
+| **Multi-tab Projects** | Work on several files simultaneously |
+
+</details>
+
+<details open>
+<summary><b>🔌 Plugin System</b></summary>
+<br/>
+
+Drop a `.py` file into `Plugins/` and it's live. Plugins can register **tools, filters, or menu actions**, declare typed settings (auto-generated dialog), and run fully sandboxed — a crashing plugin gets logged and isolated while the editor keeps running.
+
+</details>
+
+<details open>
+<summary><b>📋 Logging & Diagnostics</b></summary>
+<br/>
+
 - `logs/layered.log` — full session activity
 - `logs/errors/` — per-crash reports with stack trace + context
-- In-app console panel mirrors log output live
+- In-app **Console** panel mirrors log output live
+
+</details>
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone the repo
 git clone https://github.com/NightHawkHSI/Layered.git
 cd Layered
 
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Run
+# 3. Launch
 python main.py
 ```
 
-**Requirements:** Python 3.9+, `PyQt6 >= 6.6`, `Pillow >= 10.0`, `numpy >= 1.26`.
+**Requirements:** Python `3.9+` · `PyQt6 >= 6.6` · `Pillow >= 10.0` · `numpy >= 1.26`
 
-> Prefer not to install Python? Grab the prebuilt Windows release from the [Releases page](https://github.com/NightHawkHSI/Layered/releases/latest).
-
----
-
-## Bundled Plugins
-                    * - (Number May Change)
-                    |
-Layered ships with 17* working plugins in `Plugins/` — use them as-is or read the source as a template:
-
-| Plugin | Type | What it does |
-|---|---|---|
-| `grayscale` | Filter | Desaturate to grayscale |
-| `invert` | Filter | Invert RGB / per-channel |
-| `brightness_contrast` | Filter | Brightness + contrast sliders |
-| `sharpen` | Filter | Unsharp mask |
-| `posterize` | Filter | Reduce color levels |
-| `gradient_map` | Filter | Remap luminance to gradient |
-| `color_replace` | Filter | Swap one color for another |
-| `outline_filter` | Filter | Edge outline |
-| `glow_filter` | Filter | Soft outer glow |
-| `drop_shadow` | Filter | Drop shadow with offset / blur |
-| `normal_map` | Filter | Generate normal map from height |
-| `background_remove` | Filter | Knock out flat / chroma background |
-| `tile_fix` | Filter | Make texture seamless |
-| `pixel_art_resize` | Filter | Nearest-neighbor upscale |
-| `crop_tool` | Action | Crop canvas to selection |
-| `flip_tool` | Action | Flip horizontal / vertical |
-| `grid_overlay` | Action | Toggle grid overlay |
+> 💡 **No Python?** Grab the prebuilt Windows binary from the [Releases page](https://github.com/NightHawkHSI/Layered/releases/latest) — no setup needed.
 
 ---
 
-## Project Structure
+## 🔌 Bundled Plugins
+
+Layered ships with **17+ working plugins** in `Plugins/` — ready to use or read as templates.
+
+| Plugin | Type | Description |
+|---|:---:|---|
+| `grayscale` | 🔵 Filter | Desaturate to grayscale |
+| `invert` | 🔵 Filter | Invert RGB / per-channel |
+| `brightness_contrast` | 🔵 Filter | Brightness + contrast sliders |
+| `sharpen` | 🔵 Filter | Unsharp mask sharpening |
+| `posterize` | 🔵 Filter | Reduce color levels |
+| `gradient_map` | 🔵 Filter | Remap luminance to a gradient |
+| `color_replace` | 🔵 Filter | Swap one color for another |
+| `outline_filter` | 🔵 Filter | Edge outline effect |
+| `glow_filter` | 🔵 Filter | Soft outer glow |
+| `drop_shadow` | 🔵 Filter | Drop shadow with offset & blur |
+| `normal_map` | 🔵 Filter | Generate normal map from height |
+| `background_remove` | 🔵 Filter | Knock out flat / chroma background |
+| `tile_fix` | 🔵 Filter | Make textures seamless |
+| `pixel_art_resize` | 🔵 Filter | Nearest-neighbor upscale |
+| `crop_tool` | 🟠 Action | Crop canvas to selection |
+| `flip_tool` | 🟠 Action | Flip horizontal / vertical |
+| `grid_overlay` | 🟠 Action | Toggle grid overlay |
+
+---
+
+## 🗂 Project Structure
 
 ```
 Layered/
-├── main.py                    # Entry point
-├── requirements.txt
-├── build.bat                  # PyInstaller one-file build (Windows)
-├── Icon.png / Icon.ico
-├── app/
-│   ├── main_window.py         # Menus, docks, plugin wiring
-│   ├── canvas.py              # Interactive canvas widget
-│   ├── layer.py               # Layer + LayerStack
-│   ├── blending.py            # Blend-mode math (NumPy)
-│   ├── tools.py               # Built-in drawing tools
-│   ├── image_ops.py           # Pixel ops (fill, transforms, etc.)
-│   ├── history.py             # Undo / redo stack
-│   ├── project.py             # Project file (.layered) save/load
-│   ├── session.py             # Multi-document session state
-│   ├── export.py              # Composite + per-layer export
-│   ├── plugin_api.py          # Public plugin API (Plugin, Setting, ctx)
-│   ├── plugin_loader.py       # Plugin discovery + sandbox
-│   ├── logger.py              # Logging + crash reporter
-│   └── ui/                    # Qt panels (layers, tools, color, history,
-│                              #   text, console, project tabs, dialogs)
-├── Plugins/                   # Drop your plugins here
-├── docs/
-│   └── PLUGIN_API.md          # Full plugin API reference
-└── logs/                      # Generated at runtime
+├── 📄 main.py                    # Entry point
+├── 📄 requirements.txt
+├── 📄 build.bat                  # PyInstaller one-file build (Windows)
+├── 🖼 Icon.png / Icon.ico
+│
+├── 📁 app/
+│   ├── main_window.py            # Menus, docks, plugin wiring
+│   ├── canvas.py                 # Interactive canvas widget
+│   ├── layer.py                  # Layer + LayerStack
+│   ├── blending.py               # Blend-mode math (NumPy)
+│   ├── tools.py                  # Built-in drawing tools
+│   ├── image_ops.py              # Pixel ops (fill, transforms, etc.)
+│   ├── history.py                # Undo / redo stack
+│   ├── project.py                # .layered project save/load
+│   ├── session.py                # Multi-document session state
+│   ├── export.py                 # Composite + per-layer export
+│   ├── plugin_api.py             # Public plugin API
+│   ├── plugin_loader.py          # Plugin discovery + sandbox
+│   ├── logger.py                 # Logging + crash reporter
+│   └── 📁 ui/                   # Qt panels (layers, tools, color, history,
+│                                 #   text, console, project tabs, dialogs)
+│
+├── 📁 Plugins/                   # ← Drop your plugins here
+├── 📁 docs/
+│   └── PLUGIN_API.md             # Full plugin API reference
+└── 📁 logs/                      # Generated at runtime
 ```
 
 ---
 
-## Writing a Plugin
+## ✍️ Writing a Plugin
 
-Drop a `.py` file in `Plugins/` and subclass `Plugin`:
+Drop a `.py` file in `Plugins/` and subclass `Plugin` — that's it.
 
 ```python
 # Plugins/my_filter.py
@@ -193,7 +221,7 @@ from app.plugin_api import Plugin, PluginContext
 
 
 class GrayscalePlugin(Plugin):
-    name = "Grayscale"
+    name    = "Grayscale"
     version = "1.0.0"
 
     def register(self, ctx: PluginContext) -> None:
@@ -204,49 +232,51 @@ class GrayscalePlugin(Plugin):
         return ImageOps.grayscale(image.convert("RGB")).convert("RGBA")
 ```
 
-A plugin can register three surfaces:
+### Registration Surfaces
 
-| Kind | Where it shows up | Method |
+| Kind | Where it appears | Method |
 |---|---|---|
-| **Tool** | Toolbox button | `ctx.register_tool(name, Tool)` |
+| **Tool** | Toolbox panel | `ctx.register_tool(name, Tool)` |
 | **Filter** | `Filters` menu | `ctx.register_filter(name, fn, settings=...)` |
 | **Action** | `Plugins` menu | `ctx.register_action(name, fn, settings=...)` |
 
-Filters and actions can declare typed `Setting` specs (`int`, `float`, `bool`, `choice`, `color`, `string`) — the host auto-builds a dialog and passes values as keyword arguments. See [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md) for the full surface and the bundled `invert.py` for a settings example.
+Filters and actions accept typed `Setting` specs — `int`, `float`, `bool`, `choice`, `color`, `string` — and the host auto-generates the settings dialog, passing values as keyword arguments.
+
+📘 See [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md) for the full API surface and `invert.py` for a complete settings example.
 
 ---
 
-## Blend Modes
+## 🧩 Blend Modes
 
-| Mode | Effect |
-|---|---|
-| Normal | Standard alpha compositing |
-| Multiply | Darkens — good for shadows |
-| Screen | Lightens — good for glows |
-| Overlay | Contrast boost (multiply + screen) |
-| Darken | Keep the darker pixel |
-| Lighten | Keep the lighter pixel |
-| Add | Brighten additively (linear dodge) |
-| Subtract | Darken subtractively |
-| Difference | Highlight where layers differ |
+| Mode | Effect | Best For |
+|---|---|---|
+| **Normal** | Standard alpha compositing | Everything |
+| **Multiply** | Darkens — multiplies values | Shadows, tinting |
+| **Screen** | Lightens — inverts multiply | Glows, highlights |
+| **Overlay** | Contrast boost (multiply + screen) | Detail enhancement |
+| **Darken** | Keeps the darker pixel | Soft shadows |
+| **Lighten** | Keeps the lighter pixel | Soft highlights |
+| **Add** | Brightens additively (linear dodge) | Bloom, fire, neon |
+| **Subtract** | Darkens subtractively | Dark burn effects |
+| **Difference** | Highlights where layers differ | Masking, debug |
 
-All modes operate on premultiplied RGBA via NumPy in `app/blending.py`.
+> All modes operate on **premultiplied RGBA** via NumPy in `app/blending.py`.
 
 ---
 
-## Logging &amp; Crash Reports
+## 🪵 Logging & Crash Reports
 
-| File | Contents |
+| Location | Contents |
 |---|---|
 | `logs/layered.log` | Full session activity, INFO+ |
 | `logs/errors/<timestamp>.txt` | Stack trace + context per crash |
 | In-app **Console** panel | Live mirror of the log stream |
 
-Plugins get their own sandboxed logger (`layered.plugin.<name>`) — use `ctx.logger` instead of `print` so output lands in both the file and the console panel.
+Plugins get their own sandboxed logger (`layered.plugin.<name>`) — use `ctx.logger` instead of `print` so output lands in both the log file and the console panel.
 
 ---
 
-## Building a Standalone EXE
+## 📦 Building a Standalone EXE
 
 Windows one-file build via PyInstaller:
 
@@ -254,27 +284,41 @@ Windows one-file build via PyInstaller:
 build.bat
 ```
 
-Output drops in `dist/`. The bundled `Plugins/` and `Icon.ico` are picked up automatically.
+Output drops in `dist/`. The bundled `Plugins/` folder and `Icon.ico` are picked up automatically.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-1. Fork the repo and create a branch: `git checkout -b feature/my-thing`
-2. Make changes — keep functions small, prefer Pillow / NumPy over hand-rolled loops
-3. Run the app, verify nothing regressed
-4. Open a PR with a clear description of **what** changed and **why**
+1. **Fork** the repo and create a branch: `git checkout -b feature/my-thing`
+2. **Make changes** — keep functions small, prefer Pillow / NumPy over hand-rolled loops
+3. **Test** — run the app and verify nothing regressed
+4. **Open a PR** with a clear description of *what* changed and *why*
 
-Bug reports and feature requests live in [Issues](https://github.com/NightHawkHSI/Layered/issues).
+Bug reports and feature requests live in [Issues](https://github.com/NightHawkHSI/Layered/issues). All contributions are welcome!
 
 ---
 
-## License
+## 📄 License
 
-See [LICENSE](LICENSE).
+Distributed under the terms described in [LICENSE](LICENSE).
+
+---
 
 <div align="center">
 
-Made with Python · <a href="docs/PLUGIN_API.md">Plugin API</a> · <a href="https://github.com/NightHawkHSI/Layered/issues">Issues</a> · <a href="https://github.com/NightHawkHSI/Layered/releases">Releases</a>
+<br/>
+
+**Built with Python · Powered by PyQt6 & Pillow**
+
+<br/>
+
+[![Plugin API](https://img.shields.io/badge/🔌%20Plugin%20API-Docs-a855f7?style=flat-square&labelColor=1c1917)](docs/PLUGIN_API.md)
+[![Issues](https://img.shields.io/badge/🐞%20Issues-Tracker-ef4444?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/issues)
+[![Releases](https://img.shields.io/badge/📦%20Releases-Changelog-22c55e?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/releases)
+
+<br/>
+
+*If Layered saved you time, consider leaving a ⭐ — it helps others find the project!*
 
 </div>
