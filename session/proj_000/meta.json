@@ -3,22 +3,9 @@
   "path": null,
   "width": 1024,
   "height": 768,
-  "active_index": 1,
-  "dirty": false,
+  "active_index": 0,
+  "dirty": true,
   "layers": [
-    {
-      "name": "Background",
-      "visible": true,
-      "opacity": 1.0,
-      "blend_mode": "Normal",
-      "offset": [
-        0,
-        0
-      ],
-      "locked": false,
-      "group": null,
-      "image_file": "layer_000.png"
-    },
     {
       "name": "Layer 2",
       "visible": true,
@@ -30,7 +17,7 @@
       ],
       "locked": false,
       "group": null,
-      "image_file": "layer_001.png"
+      "image_file": "layer_000.png"
     }
   ]
 }
