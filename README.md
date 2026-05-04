@@ -43,6 +43,9 @@
 <img src="https://komarev.com/ghpvc/?username=NightHawkHSI&repo=Layered&style=flat-square&label=Views&color=brightgreen">
 </p>
 
+<p>
+  [![Anurag's GitHub stats](https://github-readme-stats.vercel.app/api?username=anuraghazra)](https://github.com/anuraghazra/github-readme-stats)
+</p>
 </div>
 
 ---
