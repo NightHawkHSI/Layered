@@ -104,4 +104,8 @@ See [`docs/PLUGIN_API.md`](../docs/PLUGIN_API.md) for the full API surface, all 
 
 The bundled `grayscale.py` and `invert.py` are good starting-point templates.
 
+<<<<<<< HEAD
 </div>
+=======
+</div>
+>>>>>>> b80716b47cf90514ef7c1938532375535527321b
