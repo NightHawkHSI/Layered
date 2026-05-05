@@ -370,4 +370,8 @@ Plugins/
 [![Issues](https://img.shields.io/badge/🐞%20Report%20a%20Bug-Issues-ef4444?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/issues/new?labels=bug)
 [![Feature Request](https://img.shields.io/badge/💡%20Request%20Feature-Issues-3b82f6?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/issues/new?labels=enhancement)
 
+<<<<<<< HEAD
 </div>
+=======
+</div>
+>>>>>>> b80716b47cf90514ef7c1938532375535527321b
