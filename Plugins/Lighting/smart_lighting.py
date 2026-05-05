@@ -105,7 +105,6 @@ class SmartLightingPlugin(Plugin):
 
         ctx.register_filter("Apply Smart Lighting", self.apply_filter, settings=settings)
         ctx.register_action("Bake Lighting to New Layer", self.bake_lighting, settings=settings)
-        ctx.register_tool("Light Brush", LightBrush(ctx.tool_context))
 
     # ---------------------------
     # Filter

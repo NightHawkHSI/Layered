@@ -107,7 +107,6 @@ class InfinitePatternLab(Plugin):
         ctx.register_action("Generate Pattern", self.generate, settings=settings)
         ctx.register_action("Create Tile Preview", self.preview)
         ctx.register_action("Export Seamless Texture", self.export_texture)
-        ctx.register_tool("Symmetry Brush", SymmetryBrush(ctx.tool_context))
 
     # ---------------------------
     # Generate new pattern

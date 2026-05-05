@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -37,25 +38,25 @@ from .slider_field import SliderField
 # Which brush-settings each tool actually uses. Tools missing from the map
 # get no settings shown.
 TOOL_SETTINGS: dict[str, list[str]] = {
-    "Brush":       ["size", "hardness", "opacity", "spacing"],
-    "Eraser":      ["size", "hardness", "opacity", "spacing"],
-    "Blur":        ["size", "hardness", "opacity", "spacing"],
-    "Sharpen":     ["size", "hardness", "opacity", "spacing"],
-    "Smudge":      ["size", "hardness", "opacity", "spacing"],
-    "Clone Stamp": ["size", "hardness", "opacity", "spacing"],
-    "Line":        ["size", "opacity"],
-    "Rectangle":   ["size", "opacity", "fill_shape"],
-    "Ellipse":     ["size", "opacity", "fill_shape"],
-    "Fill":        ["tolerance"],
-    "Magic Wand":  ["tolerance"],
-    "Gradient":    [],
-    "Text":        [],
-    "Picker":      [],
-    "Move":        [],
-    "Transform":   [],
-    "Marquee":     [],
-    "Lasso":       [],
-    "Sel Transform": [],
+    "🖌️ Brush":       ["size", "hardness", "opacity", "spacing"],
+    "🧹 Eraser":      ["size", "hardness", "opacity", "spacing"],
+    "😶‍🌫️ Blur":        ["size", "hardness", "opacity", "spacing"],
+    "✨ Sharpen":     ["size", "hardness", "opacity", "spacing"],
+    "👆 Smudge":      ["size", "hardness", "opacity", "spacing"],
+    "📋 Clone Stamp": ["size", "hardness", "opacity", "spacing"],
+    "📏 Line":        ["size", "opacity"],
+    "🟦 Rectangle":   ["size", "opacity", "fill_shape"],
+    "⭕ Ellipse":     ["size", "opacity", "fill_shape"],
+    "🎨 Fill":        ["tolerance"],
+    "🪄 Magic Wand":  ["tolerance"],
+    "🌈 Gradient":    [],
+    "📝 Text":        [],
+    "🎯 Picker":      [],
+    "✋ Move":        [],
+    "🔲 Transform":   [],
+    "⬜ Marquee":     [],
+    "🔗 Lasso":       [],
+    "🔧 Sel Transform": [],
 }
 
 
@@ -291,6 +292,25 @@ class ToolPanel(QWidget):
     # --- internals ----------------------------------------------------------
 
     def _add_button(self, name: str) -> None:
+        if name == "\U0001f58c\ufe0f Brush":  # 🖌️ Brush — split button with preset picker
+            btn = QToolButton()
+            btn.setText(name)
+            btn.setCheckable(True)
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            btn.clicked.connect(lambda _=False, n=name: self.tool_selected.emit(n))
+            self._group.addButton(btn)
+            if self._layout_mode == "toolbar":
+                btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+                fm = btn.fontMetrics()
+                btn.setMinimumWidth(fm.horizontalAdvance(name) + 32)
+                btn.setMinimumHeight(26)
+            else:
+                count = self._grid.count()
+                self._grid.addWidget(btn, count // 2, count % 2)
+            self._buttons[name] = btn
+            return
+
         btn = QPushButton(name)
         btn.setCheckable(True)
         btn.clicked.connect(lambda _=False, n=name: self.tool_selected.emit(n))
@@ -319,6 +339,133 @@ class ToolPanel(QWidget):
         self._group.removeButton(btn)
         btn.setParent(None)
         btn.deleteLater()
+
+    def set_brush_presets(self, presets_by_category: dict) -> None:
+        """Populate the Brush button's dropdown menu with category submenus.
+
+        ``presets_by_category`` maps category name → list of
+        ``BrushPreset`` objects (from ``app.brush_loader``).
+        Hovering over a category in the menu opens its submenu; clicking
+        a preset applies all of its parameters and activates the Brush
+        tool.
+        """
+        from PyQt6.QtWidgets import QMenu
+        btn = self._buttons.get("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
+        if btn is None or not isinstance(btn, QToolButton):
+            return
+        menu = QMenu(btn)
+        for category, presets in presets_by_category.items():
+            if not presets:
+                continue
+            sub = menu.addMenu(category)
+            for preset in presets:
+                label = f"{preset.icon}  {preset.name}  ({preset.size}px)"
+                action = sub.addAction(label)
+                action.triggered.connect(
+                    lambda _=False, p=preset: self._apply_preset(p)
+                )
+        btn.setMenu(menu)
+
+    def set_tool_categories(self, categories: dict[str, list[str]]) -> None:
+        """Replace all individual tool buttons with one split-button per
+        category folder.  Each split-button shows the currently active tool
+        name; the popup menu lets the user switch to any other tool in that
+        folder.  "Basic" is always placed first; remaining categories follow
+        in their original discovery order.
+
+        ``categories`` maps category name → ordered list of tool display names.
+        """
+        from PyQt6.QtWidgets import QMenu
+
+        # Basic first, then the rest in stable order.
+        ordered = sorted(categories.items(), key=lambda kv: (0 if kv[0] == "Basic" else 1, kv[0]))
+
+        # Tear down every existing per-tool button.
+        for btn in list(self._buttons.values()):
+            self._group.removeButton(btn)
+            self._grid.removeWidget(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        self._buttons.clear()
+
+        first_btn: QToolButton | None = None
+        for _cat, names in ordered:
+            if not names:
+                continue
+            primary = names[0]
+
+            split = QToolButton()
+            split.setText(primary)
+            split.setCheckable(True)
+            split.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+            if len(names) > 1:
+                split.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+                menu = QMenu(split)
+                for name in names:
+                    action = menu.addAction(name)
+                    action.triggered.connect(
+                        lambda _=False, n=name, s=split: self._on_category_pick(n, s)
+                    )
+                split.setMenu(menu)
+            else:
+                split.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+
+            split.clicked.connect(
+                lambda _=False, s=split: self.tool_selected.emit(s.text())
+            )
+
+            self._group.addButton(split)
+            self._buttons[primary] = split
+            count = self._grid.count()
+            self._grid.addWidget(split, count // 2, count % 2)
+
+            if first_btn is None:
+                first_btn = split
+
+        if first_btn is not None:
+            first_btn.setChecked(True)
+            self._active_tool_name = first_btn.text()
+
+    def _on_category_pick(self, name: str, split_btn: "QToolButton") -> None:
+        """Switch the split-button label to ``name`` and emit tool_selected."""
+        # Remap _buttons so the new active tool name resolves to this button.
+        old_key = next((k for k, v in self._buttons.items() if v is split_btn), None)
+        if old_key and old_key != name:
+            self._buttons.pop(old_key)
+            self._buttons[name] = split_btn
+        split_btn.setText(name)
+        split_btn.setChecked(True)
+        self._active_tool_name = name
+        self.tool_selected.emit(name)
+
+    def _apply_preset(self, preset) -> None:
+        """Apply ``preset`` fields to the tool context and sync all sliders."""
+        self.ctx.brush_size = preset.size
+        self.ctx.brush_hardness = preset.hardness
+        self.ctx.brush_opacity = preset.opacity
+        self.ctx.brush_spacing = preset.spacing
+        # Sync toolbar / panel slider widgets if they have been built yet.
+        if hasattr(self, "size_spin"):
+            self.size_spin.blockSignals(True)
+            self.size_spin.setValue(preset.size)
+            self.size_spin.blockSignals(False)
+        if hasattr(self, "size_slider"):
+            self.size_slider.blockSignals(True)
+            self.size_slider.setValue(min(preset.size, self.size_slider.maximum()))
+            self.size_slider.blockSignals(False)
+        if hasattr(self, "hardness_slider"):
+            self.hardness_slider.setValue(int(preset.hardness * 100))
+        if hasattr(self, "opacity_slider"):
+            self.opacity_slider.setValue(int(preset.opacity * 100))
+        if hasattr(self, "spacing_slider"):
+            self.spacing_slider.setValue(int(preset.spacing * 100))
+        # Check the Brush button and emit tool_selected so canvas switches.
+        btn = self._buttons.get("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
+        if btn is not None:
+            btn.setChecked(True)
+        self.tool_selected.emit("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
 
     # --- handlers -----------------------------------------------------------
 

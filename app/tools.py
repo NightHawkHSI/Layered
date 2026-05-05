@@ -938,6 +938,19 @@ class TransformTool(Tool):
         self._cur_bbox = None
         super().release(layer, x, y)
 
+    def commit(self) -> Optional[str]:
+        """Called by the host on tool switch. Clear any active transform state."""
+        # Transform doesn't need to return a label because each drag already
+        # commits via commit_on="release". This just clears internal state
+        # so switching away doesn't leave stale cached data.
+        self._mode = None
+        self._anchor = None
+        self._bbox0 = None
+        self._cropped = None
+        self._press_pt = None
+        self._cur_bbox = None
+        return None
+
     # --- apply transform to layer image ---
 
     def _apply(self, layer: Layer, new_bbox: tuple[int, int, int, int]) -> None:
@@ -2063,23 +2076,26 @@ class SelectionTransformTool(Tool):
 
 def build_default_tools(ctx: ToolContext) -> dict[str, Tool]:
     return {
-        "Brush": BrushTool(ctx),
-        "Eraser": EraserTool(ctx),
-        "Move": MoveTool(ctx),
-        "Transform": TransformTool(ctx),
-        "Marquee": MarqueeTool(ctx),
-        "Lasso": LassoTool(ctx),
-        "Magic Wand": MagicWandTool(ctx),
-        "Sel Transform": SelectionTransformTool(ctx),
-        "Fill": FillTool(ctx),
-        "Gradient": GradientTool(ctx),
-        "Text": TextTool(ctx),
-        "Line": LineTool(ctx),
-        "Rectangle": RectTool(ctx),
-        "Ellipse": EllipseTool(ctx),
-        "Blur": BlurTool(ctx),
-        "Sharpen": SharpenTool(ctx),
-        "Smudge": SmudgeTool(ctx),
-        "Clone Stamp": CloneStampTool(ctx),
-        "Picker": PickerTool(ctx),
+        "🖌️ Brush": BrushTool(ctx),
+        "🧹 Eraser": EraserTool(ctx),
+        "✋ Move": MoveTool(ctx),
+        "🔲 Transform": TransformTool(ctx),
+        # Selection tools grouped together
+        "⬜ Marquee": MarqueeTool(ctx),
+        "🔗 Lasso": LassoTool(ctx),
+        "🪄 Magic Wand": MagicWandTool(ctx),
+        "🔧 Sel Transform": SelectionTransformTool(ctx),
+        # Drawing tools
+        "🎨 Fill": FillTool(ctx),
+        "🌈 Gradient": GradientTool(ctx),
+        "📝 Text": TextTool(ctx),
+        "📏 Line": LineTool(ctx),
+        "🟦 Rectangle": RectTool(ctx),
+        "⭕ Ellipse": EllipseTool(ctx),
+        # Effect brushes
+        "😶‍🌫️ Blur": BlurTool(ctx),
+        "✨ Sharpen": SharpenTool(ctx),
+        "👆 Smudge": SmudgeTool(ctx),
+        "📋 Clone Stamp": CloneStampTool(ctx),
+        "🎯 Picker": PickerTool(ctx),
     }

@@ -111,6 +111,10 @@ if exist "%ROOT%\Plugins" (
     echo    %B%-%N% Syncing: %Y%Plugins%N%
     robocopy "%ROOT%\Plugins" "%RELEASE%\Plugins" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
 )
+if exist "%ROOT%\Brushes" (
+    echo    %B%-%N% Syncing: %Y%Brushes%N%
+    robocopy "%ROOT%\Brushes" "%RELEASE%\Brushes" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
+)
 for %%F in ("Icon.ico", "Icon.png", "README.md", "Changelog.md") do (
     if exist "%ROOT%\%%~F" (
         echo    %B%^>%N% Copying: %W%%%~F%N%

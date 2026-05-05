@@ -1,5 +1,102 @@
 # Changelog
 
+## 2026-05-04 (round 37) — Tool Panel Overhaul & Cleanup
+
+### Added
+1. **One split-button per Brushes folder in the tools dock.** The tools
+   panel now creates exactly one `QToolButton` per category folder inside
+   `Brushes/` (e.g. Basic, Drawing, Selection, Transform, Effects,
+   Picker). The button shows the currently active tool; clicking the
+   arrow opens a dropdown to switch to any other tool in that folder.
+   "Basic" is always pinned to the top of the list
+   (`app/ui/tool_panel.py:set_tool_categories`).
+
+2. **`ToolPanel.set_tool_categories` implemented.** The method was
+   referenced in `main_window.py` but never existed, causing an
+   `AttributeError` crash on every startup. It is now fully implemented,
+   replacing all individual per-tool buttons with per-category
+   split-buttons and wiring their dropdown items to `tool_selected`
+   (`app/ui/tool_panel.py`).
+
+### Changed
+3. **All tools now appear in the panel — no more hidden preset-only
+   tools.** The `_preset_only_tools` filter that was hiding Eraser,
+   Blur, Sharpen, Smudge, and Clone Stamp from the tools dock has been
+   removed. All tools are passed to the panel and exposed via their
+   category's split-button dropdown (`app/main_window.py`).
+
+4. **Emojis added to Marquee and Rectangle tools.** `▭ Marquee` is now
+   `⬜ Marquee` and `▯ Rectangle` is now `🟦 Rectangle` across
+   `build_default_tools`, `TOOL_SETTINGS`, and the corresponding
+   `Brushes/` manifest files. Also fixed a stale `🌫️ Blur` key in
+   `TOOL_SETTINGS` to match the actual tool name `😶‍🌫️ Blur`
+   (`app/tools.py`, `app/ui/tool_panel.py`,
+   `Brushes/Drawing/Rectangle/tool.json`,
+   `Brushes/Selection/Marquee/tool.json`).
+
+### Removed
+5. **Glitch Brush, Symmetry Brush, and Light Brush removed from the
+   tool panel.** The `register_tool` calls for these three plugin-added
+   tools have been removed from their respective plugin files
+   (`Plugins/Distortion/glitch_sorter.py`,
+   `Plugins/Game Dev/infinite_pattern_lab.py`,
+   `Plugins/Lighting/smart_lighting.py`). Their filters and actions are
+   unaffected.
+
+---
+
+## 2026-05-04 (round 36) — Performance & Tool-Name Fixes
+
+### Fixed
+1. **Startup and shutdown are now near-instant.** Plugin loading
+   (`load_plugins` / `importlib` module imports) is deferred to the
+   first idle event-loop tick via `QTimer.singleShot(0, ...)` so the
+   window paints before any plugin files are imported. On close, the
+   window hides immediately and `save_session` + `shutdown_plugins`
+   run in a background thread (joined with a 2 s timeout), eliminating
+   the visible freeze while layer PNGs are written to disk
+   (`app/main_window.py:__init__`, `_deferred_plugin_init`,
+   `closeEvent`).
+
+2. **Tool name `KeyError` crash on startup fixed.** All tool-name
+   string literals in `main_window.py` (`"Brush"`, `"Text"`,
+   `"Picker"`, `"Transform"`, `"Sel Transform"`, `"Magic Wand"`,
+   `"Move"`) were updated to match the emoji-prefixed keys that
+   `build_default_tools` actually registers (e.g. `"🖌️ Brush"`,
+   `"📝 Text"`, `"🎯 Picker"`). The app previously crashed immediately
+   with `KeyError: 'Brush'` (`app/main_window.py`).
+
+## 2026-05-03 (round 35) — Bug Fixes
+
+### Fixed
+1. **Paste-to-new-layer now properly activates the new layer.** After 
+   pasting (Ctrl+V → New Layer), the newly created layer is explicitly
+   set as active via `proj.stack.set_active()` and the layer panel 
+   refreshes before tool activation, ensuring the UI correctly shows 
+   the new layer as active. Users can immediately draw or edit on the
+   pasted layer (`app/main_window.py:_paste_new_layer`).
+
+2. **Pasted content now maintains an active selection (Paint.NET-style 
+   workflow).** Instead of clearing the selection after paste, a 
+   selection is automatically created around the pasted content based 
+   on its alpha channel. This matches Paint.NET's behavior and enables 
+   the select→copy→paste→fill workflow. The selection allows users to 
+   immediately fill, move, or modify the pasted area without the image 
+   disappearing when using selection tools 
+   (`app/main_window.py:_paste_new_layer`).
+
+3. **Fill and move operations now work correctly on pasted layers.** By
+   maintaining an active selection around pasted content (fix #2), fill
+   (Alt+Backspace) and move operations work as expected. The selection
+   defines the area to fill or move, matching the expected Paint.NET
+   workflow (`app/main_window.py:_paste_new_layer`).
+
+4. **Transform tool now properly cleans up state when switching tools.**
+   Added `commit()` method to `TransformTool` that clears internal state
+   (`_mode`, `_anchor`, `_bbox0`, `_cropped`, `_press_pt`, `_cur_bbox`)
+   when the user switches to a different tool. This prevents stale 
+   references and ensures smooth tool transitions (`app/tools.py`).
+
 ## 2026-05-03 (round 34) — 3 updates
 
 ### Added

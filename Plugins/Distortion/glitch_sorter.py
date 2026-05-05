@@ -64,7 +64,6 @@ class GlitchSortPlugin(Plugin):
         ctx.register_filter("Glitch Sort (Brightness)", self.sort_brightness, category="Glitch")
         ctx.register_filter("Glitch Sort (Red)", self.sort_red, category="Glitch")
         ctx.register_action("Glitch Sort (Random Chaos)", self.random_sort, category="Glitch")
-        ctx.register_tool("Glitch Brush", GlitchBrush(ctx))
 
         self.ctx = ctx
 

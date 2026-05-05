@@ -69,6 +69,7 @@ else:
     RESOURCE_DIR = PROJECT_DIR
 PLUGINS_DIR = PROJECT_DIR / "Plugins"
 SESSION_DIR = PROJECT_DIR / "session"
+BRUSHES_DIR = PROJECT_DIR / "Brushes"
 ICON_PATH = RESOURCE_DIR / "Icon.ico"
 if not ICON_PATH.exists():
     ICON_PATH = PROJECT_DIR / "Icon.ico"
@@ -161,17 +162,27 @@ class MainWindow(QMainWindow):
         self.tool_ctx.commit_action = self._on_action_committed
         self.tool_ctx.get_canvas_size = lambda: (self.current().stack.width, self.current().stack.height)
         self.tool_ctx.on_tolerance_changed = self._tolerance_live_update
-        self.tools = build_default_tools(self.tool_ctx)
-        if "Picker" in self.tools:
-            self.tools["Picker"].on_pick = lambda c: self.color_panel.set_primary(c)  # type: ignore[attr-defined]
-        if "Text" in self.tools:
-            text_tool = self.tools["Text"]
+        # Discover tools from Brushes/<Cat>/<ToolFolder>/tool.json. Fall
+        # back to the built-in registry for any tool the discovery
+        # didn't find — keeps the app usable while users migrate.
+        from .tool_loader import load_tools
+        try:
+            discovered, self._tool_categories_from_disk = load_tools(BRUSHES_DIR, self.tool_ctx)
+        except Exception:
+            discovered, self._tool_categories_from_disk = {}, {}
+        self.tools = dict(discovered)
+        for name, tool in build_default_tools(self.tool_ctx).items():
+            self.tools.setdefault(name, tool)
+        if "🎯 Picker" in self.tools:
+            self.tools["🎯 Picker"].on_pick = lambda c: self.color_panel.set_primary(c)  # type: ignore[attr-defined]
+        if "📝 Text" in self.tools:
+            text_tool = self.tools["📝 Text"]
             text_tool.on_layer_committed = self._on_action_committed  # type: ignore[attr-defined]
             text_tool.on_layer_created = self._on_text_new_layer  # type: ignore[attr-defined]
 
         self.canvas = Canvas(self.current().stack)
         self.canvas.selection_provider = lambda: self.current().selection
-        self.canvas.set_tool(self.tools["Brush"])
+        self.canvas.set_tool(self.tools["🖌️ Brush"])
         self.canvas.layer_changed.connect(self._on_canvas_changed)
         self.canvas.action_committed.connect(self._on_action_committed)
         self.canvas.images_dropped.connect(self._on_images_dropped)
@@ -194,8 +205,12 @@ class MainWindow(QMainWindow):
         # Stack History under Layers vertically so both fit at once.
         self.splitDockWidget(self._docks["Layers"], history_dock, Qt.Orientation.Vertical)
 
-        self.tool_panel = ToolPanel(self.tool_ctx, self.tools, layout="tools_dock")
+        # Pass every tool to the panel; set_tool_categories will create one
+        # split-button per Brushes folder (Basic on top).
+        self.tool_panel = ToolPanel(self.tool_ctx, dict(self.tools), layout="tools_dock")
         self.tool_panel.tool_selected.connect(self._on_tool_selected)
+        _disk_cats = getattr(self, "_tool_categories_from_disk", {}) or {}
+        self.tool_panel.set_tool_categories(_disk_cats)
         self._add_dock("Tools", self.tool_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
 
         self._tool_settings_bar = QToolBar("Tool settings", self)
@@ -238,21 +253,17 @@ class MainWindow(QMainWindow):
         self._plugin_event_listeners: dict[str, list] = {}
         self._plugin_dock_titles: list[str] = []
         self._plugin_reload_in_progress = False
-        self.plugins: PluginRegistry = load_plugins(
-            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
-        )
-        for name, tool in self.plugins.tools.items():
-            self.tools[name] = tool
-            self.tool_panel.add_tool_button(name)
-
-        # Hot reload watcher: poll plugin files; reload when the snapshot
-        # has been stable for one tick (debounces editor save bursts).
-        self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
+        # Start with an empty registry so the window can open immediately;
+        # the real plugin load happens on the first idle event-loop tick.
+        self.plugins: PluginRegistry = PluginRegistry()
+        self._plugin_snapshot: dict = {}
         self._plugin_pending_snapshot: Optional[dict] = None
+        self._brush_presets: dict = {}
+        # Hot reload watcher: started after deferred init so it doesn't
+        # fire before plugins have been loaded.
         self._plugin_watch_timer = QTimer(self)
         self._plugin_watch_timer.setInterval(1000)
         self._plugin_watch_timer.timeout.connect(self._poll_plugin_changes)
-        self._plugin_watch_timer.start()
 
         self._build_menus()
         self._refresh_tabs()
@@ -261,6 +272,42 @@ class MainWindow(QMainWindow):
         self._default_geometry = self.saveGeometry()
         self._restore_layout()
         self.log.info("Main window initialized: %dx%d", width, height)
+        # Defer plugin discovery + import so the window is visible before
+        # importlib overhead runs (biggest contributor to slow cold start).
+        QTimer.singleShot(0, self._deferred_plugin_init)
+
+    def _deferred_plugin_init(self) -> None:
+        """Load plugins on the first idle tick so the window paints first."""
+        self.plugins = load_plugins(
+            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
+        )
+        for name, tool in self.plugins.tools.items():
+            self.tools[name] = tool
+            self.tool_panel.add_tool_button(name)
+        self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
+        self._plugin_watch_timer.start()
+        # Load brush presets from Brushes/ and populate the brush picker.
+        try:
+            from .brush_loader import load_brush_presets
+            presets = load_brush_presets(BRUSHES_DIR)
+            if presets:
+                self._brush_presets = presets
+                self.tool_panel.set_brush_presets(presets)
+                total = sum(len(v) for v in presets.values())
+                self.log.info(
+                    "Brush presets loaded: %d preset(s) in %d categor%s",
+                    total, len(presets), "y" if len(presets) == 1 else "ies",
+                )
+        except Exception:
+            self.log.exception("Failed to load brush presets")
+        # Rebuild menus so plugin filters/actions/tools and the Brushes
+        # menu (populated from `self._brush_presets` above) appear.
+        self.menuBar().clear()
+        self._build_menus()
+        self.log.info(
+            "Plugins loaded: %d tool(s), %d filter(s), %d action(s)",
+            len(self.plugins.tools), len(self.plugins.filters), len(self.plugins.actions),
+        )
 
     def _restore_layout(self) -> None:
         geom = self._settings.value("window/geometry")
@@ -467,6 +514,14 @@ class MainWindow(QMainWindow):
                 lambda n, e: (lambda _=False: self._invoke_action(n, e)),
             )
 
+        brushes_menu = mb.addMenu("&Brushes")
+        if not self._brush_presets:
+            placeholder = QAction("(none — drop a .json in /Brushes)", self)
+            placeholder.setEnabled(False)
+            brushes_menu.addAction(placeholder)
+        else:
+            self._populate_brush_menu(brushes_menu, self._brush_presets)
+
         help_menu = mb.addMenu("&Help")
         help_menu.addAction(self._act("About", self._on_about))
 
@@ -476,6 +531,25 @@ class MainWindow(QMainWindow):
             a.setShortcut(QKeySequence(shortcut))
         a.triggered.connect(slot)
         return a
+
+    def _populate_brush_menu(self, menu, presets_by_category: dict) -> None:
+        """Add brush presets to ``menu`` grouped by category submenu.
+
+        Hovering a category submenu reveals its presets (Qt default);
+        clicking a preset applies it via the tool panel and activates the
+        Brush tool. Mirrors ``ToolPanel.set_brush_presets`` so the same
+        action is reachable from the menu bar.
+        """
+        for category, presets in presets_by_category.items():
+            if not presets:
+                continue
+            sub = menu.addMenu(category)
+            for preset in presets:
+                label = f"{preset.icon}  {preset.name}  ({preset.size}px)"
+                sub.addAction(self._act(
+                    label,
+                    lambda _=False, p=preset: self.tool_panel._apply_preset(p),
+                ))
 
     def _populate_plugin_menu(self, menu, entries, make_slot) -> None:
         """Add `entries` to `menu`, grouping by `entry.category` into submenus.
@@ -511,7 +585,7 @@ class MainWindow(QMainWindow):
         self.layer_panel.stack = proj.stack
         self.layer_panel.refresh()
         self._refresh_history_panel()
-        text_tool = self.tools.get("Text") if hasattr(self, "tools") else None
+        text_tool = self.tools.get("📝 Text") if hasattr(self, "tools") else None
         if text_tool is not None:
             text_tool.attach_stack(proj.stack)
         self.setWindowTitle(f"Layered — {proj.display_name()}")
@@ -668,7 +742,7 @@ class MainWindow(QMainWindow):
     def _on_tool_selected(self, name: str) -> None:
         # Switching away from Text — finalise any in-progress text layer.
         prev = self.canvas.tool
-        if prev is self.tools.get("Text") and name != "Text":
+        if prev is self.tools.get("📝 Text") and name != "📝 Text":
             self._on_text_commit()
         # Move tool now lifts and drags the masked pixels itself when a
         # selection is active (no longer redirects to Sel Transform).
@@ -678,7 +752,7 @@ class MainWindow(QMainWindow):
         # Generic commit-on-switch: shape tools (and any tool that exposes
         # `commit() -> Optional[str]`) flush their pending state here.
         if (prev is not None and prev is not tool
-                and prev is not self.tools.get("Text")
+                and prev is not self.tools.get("📝 Text")
                 and hasattr(prev, "commit")):
             try:
                 label = prev.commit()
@@ -686,7 +760,7 @@ class MainWindow(QMainWindow):
                 label = None
             if label:
                 self._on_action_committed(label)
-        if name == "Text":
+        if name == "📝 Text":
             text_tool = tool
             text_tool.attach_stack(self.current().stack)
             # Surface the Text panel + a tip so the user knows where to edit.
@@ -705,7 +779,7 @@ class MainWindow(QMainWindow):
         self.log.info("Tool selected: %s", name)
 
     def _on_text_changed(self) -> None:
-        text_tool = self.tools.get("Text")
+        text_tool = self.tools.get("📝 Text")
         if text_tool is None:
             return
         # Only re-render when text tool is active and editing a live layer.
@@ -715,7 +789,7 @@ class MainWindow(QMainWindow):
         self.canvas.refresh()
 
     def _on_text_commit(self) -> None:
-        text_tool = self.tools.get("Text")
+        text_tool = self.tools.get("📝 Text")
         if text_tool is None:
             return
         label = text_tool.commit()
@@ -1094,9 +1168,9 @@ class MainWindow(QMainWindow):
         if proj.selection is None:
             self.statusBar().showMessage("No selection to transform.")
             return
-        if "Sel Transform" not in self.tools:
+        if "🔧 Sel Transform" not in self.tools:
             return
-        self._on_tool_selected("Sel Transform")
+        self._on_tool_selected("🔧 Sel Transform")
 
     def _fill_selection_with(self, color) -> None:
         proj = self.current()
@@ -1445,7 +1519,7 @@ class MainWindow(QMainWindow):
 
     def _tolerance_live_update(self) -> None:
         """Re-run the magic wand with the new tolerance from its last seed."""
-        tool = self.tools.get("Magic Wand") if hasattr(self, "tools") else None
+        tool = self.tools.get("🪄 Magic Wand") if hasattr(self, "tools") else None
         if tool is None:
             return
         reapply = getattr(tool, "reapply", None)
@@ -1714,12 +1788,35 @@ class MainWindow(QMainWindow):
                 proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
                 action_desc = f"Paste ({source_label}) — crop to canvas"
 
-        proj.selection = None
         proj.stack.invalidate_cache()
+        # Keep a selection active around the pasted content so the user can
+        # immediately fill/modify it (Paint.NET-style workflow).
+        # Create a selection mask from the pasted pixels' alpha channel.
+        pasted_layer = proj.stack.active
+        if pasted_layer is not None:
+            from .project import Selection
+            pasted_img = pasted_layer.image
+            # Create selection from non-transparent pixels
+            if pasted_img.mode == "RGBA":
+                alpha = pasted_img.split()[3]
+                sel_mask = alpha.point(lambda a: 255 if a > 0 else 0)
+            else:
+                sel_mask = Image.new("L", pasted_img.size, 255)
+            bb = sel_mask.getbbox()
+            if bb is not None:
+                proj.selection = Selection(bbox=bb, mask=sel_mask)
+            else:
+                proj.selection = None
+        else:
+            proj.selection = None
+        # Ensure the newly added layer is active (add_layer should do this, but be explicit)
+        proj.stack.set_active(len(proj.stack.layers) - 1)
+        # Refresh UI BEFORE activating transform tool so the tool sees the correct active layer
         self.layer_panel.refresh()
         self.canvas.refresh()
         self._mark_dirty()
         self._on_action_committed(action_desc)
+        # Now activate transform tool on the properly-refreshed, active layer
         self._activate_transform_tool()
 
     def _paste_into_layer(self, img, bb, source_proj, source_label: str, *, extend: bool) -> None:
@@ -1794,9 +1891,9 @@ class MainWindow(QMainWindow):
         self._paste_into_layer(img, bb, source_proj, source_label, extend=False)
 
     def _activate_transform_tool(self) -> None:
-        if "Transform" not in self.tools:
+        if "🔲 Transform" not in self.tools:
             return
-        self._on_tool_selected("Transform")
+        self._on_tool_selected("🔲 Transform")
         # Pull keyboard focus to the canvas so Enter immediately commits
         # the transform (otherwise focus may sit on a panel/spinbox and
         # Return never reaches MainWindow.keyPressEvent).
@@ -1897,7 +1994,7 @@ class MainWindow(QMainWindow):
         # Tab while Text tool is active focuses the Text panel input so
         # the user can type/edit immediately after dropping a text layer
         # without reaching for the mouse.
-        if event.key() == _Qt.Key.Key_Tab and self.canvas.tool is self.tools.get("Text"):
+        if event.key() == _Qt.Key.Key_Tab and self.canvas.tool is self.tools.get("📝 Text"):
             panel = getattr(self, "text_panel", None)
             if panel is not None and getattr(panel, "text_edit", None) is not None:
                 dock = self._docks.get("Text")
@@ -1940,7 +2037,7 @@ class MainWindow(QMainWindow):
         #     beyond the canvas (or sits at a non-zero offset) leaves
         #     downstream tools — box brush, fill, etc. — misaligned
         #     against the visible pixels.
-        if active_name == "Transform":
+        if active_name == "🔲 Transform":
             layer = proj.stack.active
             if layer is not None:
                 self._crop_layer_to_canvas(layer, proj.stack.width, proj.stack.height)
@@ -1950,8 +2047,8 @@ class MainWindow(QMainWindow):
         # 2b) Transform tool has no commit() but its handles linger as a
         #     canvas overlay until another tool is picked. Switch back
         #     to Brush so Enter cleanly exits the post-paste transform.
-        if active_name in ("Transform", "Sel Transform", "Move") and "Brush" in self.tools:
-            self._on_tool_selected("Brush")
+        if active_name in ("🔲 Transform", "🔧 Sel Transform", "✋ Move") and "🖌️ Brush" in self.tools:
+            self._on_tool_selected("🖌️ Brush")
         # 3) Drop the marching-ants selection.
         if proj.selection is not None:
             proj.selection = None
@@ -2153,22 +2250,44 @@ class MainWindow(QMainWindow):
         self._schedule_layout_save()
 
     def closeEvent(self, event):  # noqa: N802
+        import threading
         try:
             self._plugin_watch_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._layout_save_timer.stop()
         except Exception:
             pass
         try:
             self._save_layout()
         except Exception:
             self.log.exception("Failed to save layout")
-        try:
-            save_session(self.projects, SESSION_DIR)
-        except Exception:
-            self.log.exception("Failed to save session")
-        try:
-            shutdown_plugins(self.plugins)
-        finally:
-            super().closeEvent(event)
+        # Accept the event and hide the window immediately so the user
+        # sees it disappear at once rather than waiting for disk I/O.
+        event.accept()
+        self.hide()
+        # Snapshot mutable state before the background thread runs so it
+        # isn't racing against Qt teardown.
+        projects_snapshot = list(self.projects)
+        plugins_snapshot = self.plugins
+        log = self.log
+
+        def _bg_close():
+            try:
+                save_session(projects_snapshot, SESSION_DIR)
+            except Exception:
+                log.exception("Failed to save session")
+            try:
+                shutdown_plugins(plugins_snapshot)
+            except Exception:
+                log.exception("shutdown_plugins failed")
+
+        t = threading.Thread(target=_bg_close, daemon=True, name="layered-close")
+        t.start()
+        # Wait up to 2 s so data is written before the process exits, but
+        # don't block the event loop indefinitely.
+        t.join(timeout=2.0)
 
     # --- plugin hot reload ---
 
@@ -2198,7 +2317,7 @@ class MainWindow(QMainWindow):
             # paint with a dangling reference after purge.
             current_tool = getattr(self.canvas, "tool", None)
             if current_tool is not None and current_tool in self.plugins.tools.values():
-                self.canvas.set_tool(self.tools.get("Brush"))
+                self.canvas.set_tool(self.tools.get("🖌️ Brush"))
 
             for name in list(self.plugins.tools.keys()):
                 self.tools.pop(name, None)
