@@ -400,17 +400,14 @@ class ToolPanel(QWidget):
             split.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            if len(names) > 1:
-                split.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-                menu = QMenu(split)
-                for name in names:
-                    action = menu.addAction(name)
-                    action.triggered.connect(
-                        lambda _=False, n=name, s=split: self._on_category_pick(n, s)
-                    )
-                split.setMenu(menu)
-            else:
-                split.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+            split.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            menu = QMenu(split)
+            for name in names:
+                action = menu.addAction(name)
+                action.triggered.connect(
+                    lambda _=False, n=name, s=split: self._on_category_pick(n, s)
+                )
+            split.setMenu(menu)
 
             split.clicked.connect(
                 lambda _=False, s=split: self.tool_selected.emit(s.text())

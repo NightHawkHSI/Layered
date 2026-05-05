@@ -50,23 +50,36 @@ def load_tools(brushes_dir: Path, ctx) -> Tuple[dict[str, Any], dict[str, list[s
             if not tool_dir.is_dir():
                 continue
             manifest = tool_dir / "tool.json"
-            if not manifest.exists():
-                continue
-            try:
-                meta = json.loads(manifest.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            display_name = meta.get("name")
-            if not display_name:
+            tool_py = tool_dir / "tool.py"
+            meta: dict = {}
+            if manifest.exists():
+                try:
+                    meta = json.loads(manifest.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+            elif not tool_py.exists():
                 continue
             cls = _resolve_class(tool_dir, meta)
             if cls is None:
                 continue
+            display_name = meta.get("name") or getattr(cls, "name", None) or tool_dir.name
             try:
-                tools_out[display_name] = cls(ctx)
+                try:
+                    inst = cls()
+                except TypeError:
+                    inst = cls(ctx)
             except Exception:
                 continue
+            try:
+                inst.ctx = ctx
+            except Exception:
+                pass
             effective_cat = meta.get("category") or cat
+            try:
+                inst.group = effective_cat
+            except Exception:
+                pass
+            tools_out[display_name] = inst
             cats_out.setdefault(effective_cat, []).append(display_name)
     return tools_out, cats_out
 

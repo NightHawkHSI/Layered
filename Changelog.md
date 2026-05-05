@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-05-05 — Plugin-Driven Tools & Settings UI
+
+### Added
+1. **Folder-based tool plugins under `Plugins/Brushes/<Group>/<Tool>/`.**
+   Each `tool.py` exposes `TOOL_CLASS` and is auto-discovered by
+   `app.tool_loader.load_tools` — no `Plugin` subclass, no
+   `register_tool` call. Group folders become split-buttons in the Tools
+   dock; sub-tools populate the dropdown
+   (`app/tool_loader.py`, `app/main_window.py:_deferred_plugin_init`).
+
+2. **`Tool.build_ui(parent, ctx)` mounts per-tool settings into the
+   tool-settings toolbar.** A persistent host widget keeps the toolbar a
+   fixed 40 px tall, so switching tools never reflows the main UI. The
+   previous tool's widget is destroyed before the new one is built
+   (`app/main_window.py:_mount_tool_settings`,
+   `app/tools.py:Tool.build_ui`).
+
+3. **Lifecycle hooks on the `Tool` base class.** New methods
+   `on_select(ctx)`, `on_deselect(ctx)`, `on_mouse_down/drag/up(ctx,
+   x, y)` make tools fully self-contained. Default `press`/`move`/
+   `release` shims forward to the new hooks via `ctx.active_layer`,
+   keeping existing tools working unchanged (`app/tools.py:Tool`).
+
+4. **Magic Wand has its own popout settings UI.** A 110 px-wide
+   "Tolerance" `QToolButton` opens a dropdown carrying the SliderField
+   so the toolbar shape is constant. Slider drags update
+   `ctx.fill_tolerance` immediately; `MagicWandTool.reapply()` is
+   debounced by a 120 ms `QTimer` to stop the flood-fill scan from
+   running on every pixel of slider travel
+   (`Plugins/Brushes/Select/MagicWand/tool.py`).
+
+### Changed
+5. **`Plugins/builtin_tools.py` → `Plugins/_builtin_tools.py`.** The
+   underscore prefix tells `app.plugin_loader` to skip the file, so it
+   no longer double-registers the same tool classes that
+   `Plugins/Brushes/<Group>/<Tool>/tool.py` wrappers expose. The 19
+   bundled tools are still defined in `_builtin_tools.py` and pulled in
+   by importlib from each wrapper.
+
+6. **Default-tool selection now uses `Tool.is_default`, not emoji
+   strings.** `_post_plugin_tools_loaded` walks `self.tools.values()`
+   and activates the first tool with `is_default=True` (falling back to
+   `BrushTool`, then any tool). Picker / Text wiring uses class-name
+   checks (`type(tool).__name__ == "PickerTool"`) instead of looking up
+   `"🎯 Picker"` / `"📝 Text"` by literal display name
+   (`app/main_window.py`).
+
+### Fixed
+7. **`AttributeError: 'ToolContext' object has no attribute
+   'brush_size'` on startup.** The legacy tool-state fields
+   (`brush_size`, `brush_hardness`, `brush_opacity`, `brush_spacing`,
+   `fill_tolerance`, `fill_shape`, `text`, `text_size`, `text_font`,
+   `on_tolerance_changed`) were re-added to `ToolContext` as a
+   compatibility shim while the legacy tools in `_builtin_tools.py`
+   still read from shared context. Marked `DEPRECATED`; removable once
+   every tool owns its own state through `build_ui()`
+   (`app/tools.py:ToolContext`).
+
+8. **`Plugins/Brushes/Select/Lasso/tool.py` failed to import.** The
+   docstring contained a 0x97 byte (cp1252 em-dash) that broke UTF-8
+   decoding. Re-encoded as UTF-8.
+
+9. **`Tool` base class missing `__init__` broke `super().__init__(ctx)`
+   calls in legacy tools.** Added
+   `__init__(self, ctx: Optional[ToolContext] = None)` so both old-style
+   `super().__init__(ctx)` and new-style `super().__init__()` work
+   (`app/tools.py:Tool.__init__`).
+
+10. **Tool-group split-button only had a dropdown when the group held
+    more than one tool.** `set_tool_categories` now always attaches the
+    dropdown menu, so single-tool groups still expose the popup affordance
+    (`app/ui/tool_panel.py:set_tool_categories`).
+
+---
+
 ## 2026-05-04 (round 37) — Tool Panel Overhaul & Cleanup
 
 ### Added

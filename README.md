@@ -190,8 +190,8 @@ Layered/
 │   ├── canvas.py                 # Interactive canvas widget
 │   ├── layer.py                  # Layer + LayerStack
 │   ├── blending.py               # Blend-mode math (NumPy)
-│   ├── tools.py                  # Built-in tool base classes + impls
-│   ├── tool_loader.py            # Tool discovery from Brushes/<Cat>/<Tool>/
+│   ├── tools.py                  # Tool base class + ToolContext + drawing helpers
+│   ├── tool_loader.py            # Tool discovery from Plugins/Brushes/<Group>/<Tool>/
 │   ├── brush_loader.py           # Brush-preset discovery from Brushes/
 │   ├── image_ops.py              # Pixel ops (fill, transforms, etc.)
 │   ├── history.py                # Undo / redo stack
@@ -205,12 +205,12 @@ Layered/
 │                                 #   text, console, project tabs, dialogs)
 │
 ├── 📁 Plugins/                   # ← Drop your plugins here
-├── 📁 Brushes/                   # ← Brush presets + tool definitions
-│   └── <Category>/
-│       ├── <preset>.json         # Brush preset (size/hardness/opacity/...)
-│       └── <ToolFolder>/
-│           ├── tool.json         # Tool manifest (name, class, category)
-│           └── tool.py           # Optional custom tool (TOOL_CLASS attr)
+│   └── Brushes/                  #     Tool plugins, grouped by folder
+│       └── <Group>/              #     Group becomes a split-button in the Tools dock
+│           └── <Tool>/
+│               ├── tool.py       # Required — defines TOOL_CLASS = MyTool
+│               └── tool.json     # Optional manifest (display name, category override)
+├── 📁 Brushes/                   # ← Brush presets (size/hardness/opacity/...)
 ├── 📁 docs/
 │   └── PLUGIN_API.md             # Full plugin API reference
 └── 📁 logs/                      # Generated at runtime
@@ -256,13 +256,12 @@ Filters and actions accept typed `Setting` specs — `int`, `float`, `bool`, `ch
 
 ## 🖌 Brush Presets & Custom Tools
 
-The `Brushes/` folder drives both the brush picker and the tool panel. Each top-level subfolder is a **category** (its own split-button in the Tools dock). A category folder may contain:
+Tools and brush presets live in two separate trees:
 
-| File | Purpose |
-|---|---|
-| `*.json` | A **brush preset** — size/hardness/opacity/spacing, optional `tool` field to route to a specific tool |
-| `<ToolFolder>/tool.json` | A **tool manifest** — `name`, `class` (resolved against `app.tools`), optional `category` override |
-| `<ToolFolder>/tool.py` | Optional **custom tool implementation** — must expose `TOOL_CLASS = MyTool` |
+| Folder | Drives | Layout |
+|---|---|---|
+| `Plugins/Brushes/` | The **Tools dock** — every group folder becomes a split-button with its sub-tools in a dropdown | `<Group>/<Tool>/tool.py` |
+| `Brushes/` | The **brush preset picker** — preset JSON files per category | `<Category>/<preset>.json` |
 
 ### Adding a brush preset
 
@@ -274,29 +273,55 @@ The `Brushes/` folder drives both the brush picker and the tool panel. Each top-
 ### Adding a custom tool
 
 ```text
-Brushes/MyCategory/MyTool/
-├── tool.json
-└── tool.py
-```
-
-```json
-// tool.json
-{ "name": "🦄 My Tool", "class": "MyToolClass" }
+Plugins/Brushes/Paint/Marker/
+└── tool.py        # exposes TOOL_CLASS — that's the only required file
 ```
 
 ```python
 # tool.py
+from PIL import ImageDraw
 from app.tools import Tool
 
-class MyToolClass(Tool):
-    def on_press(self, x, y, modifiers): ...
-    def on_drag (self, x, y, modifiers): ...
-    def on_release(self, x, y, modifiers): ...
 
-TOOL_CLASS = MyToolClass
+class MarkerTool(Tool):
+    name = "Marker"
+    is_default = False                # set True to make this the boot-time tool
+
+    def on_select(self, ctx): ...      # called when this tool becomes active
+    def on_deselect(self, ctx): ...    # called just before another tool takes over
+
+    def on_mouse_down(self, ctx, x, y): ...   # mouse press
+    def on_mouse_drag(self, ctx, x, y): ...   # mouse move while held
+    def on_mouse_up  (self, ctx, x, y): ...   # mouse release
+
+    def build_ui(self, parent, ctx):
+        """Return a QWidget hosted in the tool-settings toolbar.
+        The previous tool's widget is destroyed before this is called.
+        Return None if the tool needs no settings UI."""
+        return None
+
+
+TOOL_CLASS = MarkerTool
 ```
 
-Discovery is automatic on launch — no registration code, no menu wiring. Drop the folder, restart, and the new split-button appears under your category.
+Optional `tool.json` lets a tool override its display name or category:
+
+```json
+{ "name": "✏️ Marker", "category": "Paint" }
+```
+
+Discovery is automatic on launch — no registration code, no menu wiring. The folder structure builds the UI:
+
+```text
+Plugins/Brushes/
+├── Paint/        →  [ Paint ▼ ]   Brush · Eraser · Fill · Gradient
+├── Select/       →  [ Select ▼ ]  Lasso · Marquee · Magic Wand · Sel Transform
+├── Draw/         →  [ Draw ▼ ]    Line · Rectangle · Ellipse
+├── Effects/      →  [ Effects ▼ ] Blur · Sharpen · Smudge · Clone Stamp
+├── Transform/    →  [ Transform ▼ ] Move · Transform
+├── Text/         →  [ Text ▼ ]    Text
+└── Utility/      →  [ Utility ▼ ] Picker
+```
 
 ---
 

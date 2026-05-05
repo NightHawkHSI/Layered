@@ -30,9 +30,9 @@ Layered scans the top-level `Plugins/` folder at startup. Every `.py` file (or p
 
 A plugin can register three surfaces:
 
-| Kind | Where it appears | Registration method |
+| Kind | Where it appears | How to register |
 |:---:|---|---|
-| 🛠 **Tool** | Tool panel button | `ctx.register_tool(name, Tool)` |
+| 🛠 **Tool** | Tools-dock split-button (auto-grouped by folder) | Drop a `tool.py` with `TOOL_CLASS = MyTool` into `Plugins/Brushes/<Group>/<ToolName>/` — see [Tool Plugins](#-tool-plugins) |
 | 🔵 **Filter** | `Filters` menu item | `ctx.register_filter(name, fn, settings=[], category=None)` |
 | 🟠 **Action** | `Plugins` menu item | `ctx.register_action(name, fn, settings=[], category=None)` |
 
@@ -188,33 +188,72 @@ ctx.ask_save_file(filters="...")   # -> Path | None
 
 ## 🛠 Tool Plugins
 
-Subclass `app.tools.Tool` and implement `press`, `move`, `release`. Each method receives the **layer** and **canvas-space integer pixel coordinates**.
+Tool plugins live in their own folder under `Plugins/Brushes/<Group>/<ToolName>/`. The folder is the unit of distribution — drop it in, restart, and the tool appears in the matching group's split-button dropdown.
+
+### Folder layout
+
+```text
+Plugins/Brushes/
+└── Paint/
+    └── Dot/
+        ├── tool.py       # required — exposes TOOL_CLASS
+        └── tool.json     # optional — display name / category override
+```
+
+### Tool interface
+
+Subclass `app.tools.Tool` and implement whichever lifecycle and mouse hooks you need. Every method has a no-op default, so you only override what you actually use.
 
 ```python
-# Plugins/dot_tool.py
+# Plugins/Brushes/Paint/Dot/tool.py
 from app.tools import Tool
-from app.plugin_api import Plugin, PluginContext
 
 
 class DotTool(Tool):
     name = "Dot"
+    is_default = False              # set True to make this the boot-time tool
 
-    def press(self, layer, x: int, y: int) -> None:
-        layer.image.putpixel((x, y), self.ctx.primary_color)
+    # --- lifecycle -----------------------------------------------------
+    def on_select(self, ctx) -> None: ...     # tool became active
+    def on_deselect(self, ctx) -> None: ...   # another tool is taking over
 
-    def move(self, layer, x: int, y: int) -> None:
-        pass  # optional — called while dragging
+    # --- mouse events --------------------------------------------------
+    def on_mouse_down(self, ctx, x: int, y: int) -> None:
+        layer = ctx.active_layer
+        if layer is not None:
+            layer.image.putpixel((x, y), ctx.primary_color)
 
-    def release(self, layer, x: int, y: int) -> None:
-        pass  # optional — called on mouse-up
+    def on_mouse_drag(self, ctx, x: int, y: int) -> None: ...
+    def on_mouse_up  (self, ctx, x: int, y: int) -> None: ...
+
+    # --- settings UI ---------------------------------------------------
+    def build_ui(self, parent, ctx):
+        """Return a QWidget for the tool-settings toolbar (or None).
+        Called every time the tool is activated; the previous widget is
+        destroyed first so each call gets a fresh widget tree."""
+        return None
 
 
-class DotPlugin(Plugin):
-    name = "Dot Tool"
-
-    def register(self, ctx: PluginContext) -> None:
-        ctx.register_tool("Dot", DotTool(ctx.tool_context))
+TOOL_CLASS = DotTool
 ```
+
+> No `Plugin` subclass, no `register()` call — `app.tool_loader` discovers `tool.py` automatically and instantiates `TOOL_CLASS` for you.
+
+### Optional `tool.json`
+
+```json
+{ "name": "✏️ Dot", "category": "Paint" }
+```
+
+| Key | Purpose |
+|---|---|
+| `name` | Display name (defaults to `Tool.name` or the folder name) |
+| `category` | Override the parent folder as the group label |
+| `class` | Resolve a class from `app.tools` instead of `tool.py` (legacy) |
+
+### Mouse-event compatibility shim
+
+The `Tool` base class provides default `press`, `move`, and `release` methods that forward to `on_mouse_down`, `on_mouse_drag`, and `on_mouse_up` after stashing the active layer on `ctx.active_layer`. Old-style tools that override `press`/`move`/`release` directly continue to work unchanged.
 
 ---
 

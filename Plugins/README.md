@@ -15,6 +15,14 @@
 
 ```
 Plugins/
+├── 📁 Brushes/        # Tool plugins — each subfolder is a Tools-dock group
+│   ├── Paint/         #   Brush · Eraser · Fill · Gradient
+│   ├── Select/        #   Lasso · Marquee · Magic Wand · Sel Transform
+│   ├── Draw/          #   Line · Rectangle · Ellipse
+│   ├── Effects/       #   Blur · Sharpen · Smudge · Clone Stamp
+│   ├── Transform/     #   Move · Transform
+│   ├── Text/          #   Text
+│   └── Utility/       #   Picker
 ├── 📁 Color/          # Brightness, hue shift, palette snap, …
 ├── 📁 Distortion/     # Warp, wave, glitch sorter, …
 ├── 📁 ETC/            # Uncategorised plugins
@@ -23,6 +31,11 @@ Plugins/
 ├── 📁 Stylize/        # Outline, pixelate, retro vision, …
 └── 📁 Utility/        # Crop, flip, sharpen, plugin builder, …
 ```
+
+> `Plugins/Brushes/` is loaded by `app.tool_loader`, the rest by
+> `app.plugin_loader`. Files prefixed with `_` (e.g. `_builtin_tools.py`)
+> are skipped by both loaders — use the underscore prefix for shared
+> helpers that should not auto-register.
 
 ---
 
@@ -66,9 +79,9 @@ class GrayscalePlugin(Plugin):
 
 A plugin can register three surfaces:
 
-| Kind | Where it appears | Method |
+| Kind | Where it appears | How to register |
 |:---:|---|---|
-| 🛠 **Tool** | Tool panel | `ctx.register_tool(name, Tool)` |
+| 🛠 **Tool** | Tools dock split-button | Drop a `tool.py` (with `TOOL_CLASS = MyTool`) in `Plugins/Brushes/<Group>/<ToolName>/` — no `Plugin` subclass needed |
 | 🔵 **Filter** | `Filters` menu | `ctx.register_filter(name, fn, settings=[], category=None)` |
 | 🟠 **Action** | `Plugins` menu | `ctx.register_action(name, fn, settings=[], category=None)` |
 

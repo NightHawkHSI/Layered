@@ -149,6 +149,10 @@ class PluginHost(Protocol):
     def ask_open_file(self, filters: str = "All Files (*.*)") -> Optional[Path]: ...
     def ask_save_file(self, filters: str = "All Files (*.*)") -> Optional[Path]: ...
 
+    # tools / brushes (used by the builtin-tools plugin)
+    def set_brush_presets(self, presets: dict) -> None: ...
+    def set_tool_categories(self, categories: dict) -> None: ...
+
 
 @dataclass
 class PluginContext:
@@ -276,6 +280,12 @@ class PluginContext:
 
     def ask_save_file(self, filters: str = "All Files (*.*)") -> Optional[Path]:
         return self.host.ask_save_file(filters)
+
+    def set_brush_presets(self, presets: dict) -> None:
+        self.host.set_brush_presets(presets)
+
+    def set_tool_categories(self, categories: dict) -> None:
+        self.host.set_tool_categories(categories)
 
 
 class Plugin:
