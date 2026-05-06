@@ -93,14 +93,25 @@ class FillTool(Tool):
         lx, ly = x - ox, y - oy
         if not (0 <= lx < layer.image.width and 0 <= ly < layer.image.height):
             return
-        rgba = layer.image
-        target = rgba.getpixel((lx, ly))
-        replacement = self.ctx.primary_color
-        if target == replacement:
-            return
-        before = rgba.copy()
-        ImageDraw.floodfill(rgba, (lx, ly), replacement, thresh=self.ctx.fill_tolerance)
-        _clip_layer_to_selection(layer, self.ctx, before)
+        before = layer.image.copy()
+        if self.ctx.ctrl_held:
+            # Ctrl held: fill all selected pixels at once (skip flood-fill)
+            rgba = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
+            fill = Image.new("RGBA", rgba.size, self.ctx.primary_color)
+            sel_mask = _selection_at_layer(self.ctx, layer)
+            if sel_mask is not None:
+                rgba.paste(fill, mask=sel_mask)
+            else:
+                rgba.paste(fill)
+            layer.image = rgba
+        else:
+            rgba = layer.image
+            target = rgba.getpixel((lx, ly))
+            replacement = self.ctx.primary_color
+            if target == replacement:
+                return
+            ImageDraw.floodfill(rgba, (lx, ly), replacement, thresh=self.ctx.fill_tolerance)
+            _clip_layer_to_selection(layer, self.ctx, before)
 
 
 class LineTool(Tool):
@@ -515,6 +526,11 @@ class TransformTool(Tool):
         self._cropped: Optional[Image.Image] = None
         self._press_pt: Optional[tuple[int, int]] = None
         self._cur_bbox: Optional[tuple[int, int, int, int]] = None
+        self._rotation_angle: float = 0.0
+        self._rotation_angle_at_press: float = 0.0
+        self._layer_at_press: Optional[Image.Image] = None
+        self._offset_at_press: Optional[tuple[int, int]] = None
+        self._layer_ref: Optional[Layer] = None
 
     def _layer_bbox(self, layer: Layer) -> Optional[tuple[int, int, int, int]]:
         ox, oy = layer.offset
@@ -524,11 +540,17 @@ class TransformTool(Tool):
         return (ox, oy, ox + lw, oy + lh)
 
     def _hit_handle(self, layer: Layer, x: int, y: int, hit_radius: int) -> Optional[str]:
-        bb = self._layer_bbox(layer)
+        bb = self._cur_bbox or self._layer_bbox(layer)
         if bb is None:
             return None
         x0, y0, x1, y1 = bb
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        # Rotation handle: above top-center
+        zoom = max(getattr(self.ctx, "_canvas_zoom", 1.0), 1e-6)
+        rot_canvas_offset = max(20, int(30 / zoom))
+        rot_hx, rot_hy = cx, y0 - rot_canvas_offset
+        if (x - rot_hx) ** 2 + (y - rot_hy) ** 2 <= hit_radius * hit_radius:
+            return "rotate"
         handles = {
             "nw": (x0, y0), "n": (cx, y0), "ne": (x1, y0),
             "w":  (x0, cy),                "e":  (x1, cy),
@@ -546,7 +568,7 @@ class TransformTool(Tool):
         return None
 
     def press(self, layer: Layer, x: int, y: int) -> None:
-        bb = self._layer_bbox(layer)
+        bb = self._cur_bbox or self._layer_bbox(layer)
         if bb is None:
             return
         zoom = max(getattr(self.ctx, "_canvas_zoom", 1.0), 1e-6)
@@ -554,8 +576,18 @@ class TransformTool(Tool):
         h = self._hit_handle(layer, x, y, hit_radius)
         if h is None:
             return
+        # Save state so cancel() can restore it
+        self._layer_at_press = layer.image.copy()
+        self._offset_at_press = layer.offset
+        self._layer_ref = layer
         self._anchor = h
-        self._mode = "move" if h == "move" else f"scale-{h}"
+        if h == "move":
+            self._mode = "move"
+        elif h == "rotate":
+            self._mode = "rotate"
+            self._rotation_angle_at_press = self._rotation_angle
+        else:
+            self._mode = f"scale-{h}"
         self._bbox0 = bb
         self._cur_bbox = bb
         self._press_pt = (x, y)
@@ -569,6 +601,21 @@ class TransformTool(Tool):
         x0, y0, x1, y1 = self._bbox0
         px, py = self._press_pt
         dx, dy = x - px, y - py
+
+        if self._mode == "rotate":
+            import math
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            initial_angle = math.atan2(py - cy, px - cx)
+            current_angle = math.atan2(y - cy, x - cx)
+            delta = math.degrees(current_angle - initial_angle)
+            angle = self._rotation_angle_at_press + delta
+            if self.ctx.ctrl_held:
+                angle = round(angle / 45.0) * 45.0
+            self._rotation_angle = angle
+            # Always apply from the original bbox so there is no drift
+            self._apply(layer, self._bbox0)
+            return
 
         if self._mode == "move":
             new_bbox = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
@@ -628,7 +675,11 @@ class TransformTool(Tool):
         self._bbox0 = None
         self._cropped = None
         self._press_pt = None
-        self._cur_bbox = None
+        self._rotation_angle = 0.0
+        self._rotation_angle_at_press = 0.0
+        self._layer_at_press = None
+        self._offset_at_press = None
+        self._layer_ref = None
         super().release(layer, x, y)
 
     def commit(self) -> Optional[str]:
@@ -638,23 +689,63 @@ class TransformTool(Tool):
         self._cropped = None
         self._press_pt = None
         self._cur_bbox = None
+        self._rotation_angle = 0.0
+        self._rotation_angle_at_press = 0.0
+        self._layer_at_press = None
+        self._offset_at_press = None
+        self._layer_ref = None
         return None
+
+    def cancel(self) -> None:
+        """Cancel the current drag and restore the layer to its pre-drag state."""
+        if (self._mode is not None
+                and self._layer_at_press is not None
+                and self._layer_ref is not None):
+            self._layer_ref.image = self._layer_at_press
+            self._layer_ref.offset = self._offset_at_press or (0, 0)
+            self._cur_bbox = self._layer_bbox(self._layer_ref)
+        self._mode = None
+        self._anchor = None
+        self._bbox0 = None
+        self._cropped = None
+        self._press_pt = None
+        self._rotation_angle = 0.0
+        self._rotation_angle_at_press = 0.0
+        self._layer_at_press = None
+        self._offset_at_press = None
+        self._layer_ref = None
 
     def _apply(self, layer: Layer, new_bbox: tuple[int, int, int, int]) -> None:
         if self._cropped is None:
             return
+        import math as _math
+        img: Image.Image = self._cropped
         nx0, ny0, nx1, ny1 = new_bbox
+        if self._rotation_angle != 0.0:
+            img = img.rotate(-self._rotation_angle, expand=True,
+                             resample=Image.Resampling.BICUBIC)
+            if self._mode == "rotate":
+                # Keep the center of the original bbox fixed; expand the
+                # bbox to the AABB of the rotated image so pixels are never
+                # clipped during the live preview.
+                rw, rh = img.size
+                cx = (nx0 + nx1) / 2.0
+                cy = (ny0 + ny1) / 2.0
+                nx0 = int(round(cx - rw / 2))
+                ny0 = int(round(cy - rh / 2))
+                nx1 = nx0 + rw
+                ny1 = ny0 + rh
         nw = max(1, nx1 - nx0)
         nh = max(1, ny1 - ny0)
-        resized = self._cropped.resize((nw, nh), Image.Resampling.LANCZOS)
+        resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
         new_img = Image.new("RGBA", (nw, nh), (0, 0, 0, 0))
         new_img.paste(resized, (0, 0), resized)
         layer.image = new_img
         layer.offset = (nx0, ny0)
-        self._cur_bbox = new_bbox
+        self._cur_bbox = (nx0, ny0, nx1, ny1)
 
     def paint_overlay(self, painter, canvas) -> None:
-        from PyQt6.QtCore import QRect
+        from PyQt6.QtCore import QLineF, QRect
         from PyQt6.QtGui import QColor, QPen
         layer = canvas.layer_stack.active
         if layer is None:
@@ -682,6 +773,19 @@ class TransformTool(Tool):
             (rect.left(), rect.bottom()), (cx, rect.bottom()), (rect.right(), rect.bottom()),
         ):
             painter.drawRect(int(hx - hs / 2), int(hy - hs / 2), hs, hs)
+        # Rotation handle: circle above top-centre, connected by a line
+        zoom = max(getattr(self.ctx, "_canvas_zoom", 1.0), 1e-6)
+        rot_canvas_offset = max(20, int(30 / zoom))
+        rot_sx, rot_sy = canvas.canvas_to_screen(
+            (x0 + x1) // 2, y0 - rot_canvas_offset)
+        rot_pen = QPen(QColor(255, 220, 0, 220), 1)
+        rot_pen.setCosmetic(True)
+        painter.setPen(rot_pen)
+        painter.setBrush(QColor(255, 220, 0, 200))
+        rot_r = hs
+        painter.drawEllipse(int(rot_sx - rot_r), int(rot_sy - rot_r),
+                            rot_r * 2, rot_r * 2)
+        painter.drawLine(QLineF(cx, rect.top(), rot_sx, rot_sy))
 
 
 # --- selection tools --------------------------------------------------------
@@ -1014,6 +1118,12 @@ class MagicWandTool(_SelectionToolBase):
             combined = canvas_mask
         self._commit_mask(combined)
         self._seed = (id(layer), layer, lx, ly, use_ctrl)
+        ca = getattr(self.ctx, "commit_action", None)
+        if ca is not None:
+            try:
+                ca("Magic Wand")
+            except Exception:
+                pass
 
     def reapply(self) -> None:
         if self._seed is None:
@@ -1618,46 +1728,11 @@ class BuiltinToolsPlugin(Plugin):
     author = "Layered"
 
     def register(self, ctx: PluginContext) -> None:
-        tc = ctx.tool_context
-
-        tools = {
-            "??? Brush":         BrushTool(tc),
-            "?? Eraser":        EraserTool(tc),
-            "? Move":          MoveTool(tc),
-            "?? Transform":     TransformTool(tc),
-            "? Marquee":       MarqueeTool(tc),
-            "?? Lasso":         LassoTool(tc),
-            "?? Magic Wand":    MagicWandTool(tc),
-            "?? Sel Transform": SelectionTransformTool(tc),
-            "?? Fill":          FillTool(tc),
-            "?? Gradient":      GradientTool(tc),
-            "?? Text":          TextTool(tc),
-            "?? Line":          LineTool(tc),
-            "?? Rectangle":     RectTool(tc),
-            "? Ellipse":       EllipseTool(tc),
-            "?????? Blur":          BlurTool(tc),
-            "? Sharpen":       SharpenTool(tc),
-            "?? Smudge":        SmudgeTool(tc),
-            "?? Clone Stamp":   CloneStampTool(tc),
-            "?? Picker":        PickerTool(tc),
-        }
-
-        for name, tool in tools.items():
-            ctx.register_tool(name, tool)
-
-        # Discover additional tools from Brushes/<Cat>/<ToolFolder>/tool.json.
-        brushes_dir = Path(__file__).resolve().parent.parent / "Brushes"
-        try:
-            from app.tool_loader import load_tools
-            discovered, categories = load_tools(brushes_dir, tc)
-            for name, tool in discovered.items():
-                ctx.register_tool(name, tool)
-            if categories:
-                ctx.set_tool_categories(categories)
-        except Exception as exc:
-            ctx.logger.warning("tool_loader failed: %s", exc)
-
-        # Load brush presets from Brushes/.
+        # Tool registration is owned by app.tool_loader.load_tools, called
+        # from MainWindow._deferred_plugin_init against Plugins/Brushes/.
+        # This plugin only loads brush *presets* from the top-level Brushes/
+        # directory so the brush picker dropdown is populated.
+        brushes_dir = Path(__file__).resolve().parent.parent.parent / "Brushes"
         try:
             from app.brush_loader import load_brush_presets
             presets = load_brush_presets(brushes_dir)

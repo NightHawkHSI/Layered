@@ -38,25 +38,25 @@ from .slider_field import SliderField
 # Which brush-settings each tool actually uses. Tools missing from the map
 # get no settings shown.
 TOOL_SETTINGS: dict[str, list[str]] = {
-    "🖌️ Brush":       ["size", "hardness", "opacity", "spacing"],
-    "🧹 Eraser":      ["size", "hardness", "opacity", "spacing"],
-    "😶‍🌫️ Blur":        ["size", "hardness", "opacity", "spacing"],
-    "✨ Sharpen":     ["size", "hardness", "opacity", "spacing"],
-    "👆 Smudge":      ["size", "hardness", "opacity", "spacing"],
-    "📋 Clone Stamp": ["size", "hardness", "opacity", "spacing"],
-    "📏 Line":        ["size", "opacity"],
-    "🟦 Rectangle":   ["size", "opacity", "fill_shape"],
-    "⭕ Ellipse":     ["size", "opacity", "fill_shape"],
-    "🎨 Fill":        ["tolerance"],
-    "🪄 Magic Wand":  ["tolerance"],
-    "🌈 Gradient":    [],
-    "📝 Text":        [],
-    "🎯 Picker":      [],
-    "✋ Move":        [],
-    "🔲 Transform":   [],
-    "⬜ Marquee":     [],
-    "🔗 Lasso":       [],
-    "🔧 Sel Transform": [],
+    "Brush":           ["size", "hardness", "opacity", "spacing"],
+    "Eraser":          ["size", "hardness", "opacity", "spacing"],
+    "Blur":            ["size", "hardness", "opacity", "spacing"],
+    "Sharpen":         ["size", "hardness", "opacity", "spacing"],
+    "Smudge":          ["size", "hardness", "opacity", "spacing"],
+    "Clone Stamp":     ["size", "hardness", "opacity", "spacing"],
+    "Line":            ["size", "opacity"],
+    "Rectangle":       ["size", "opacity", "fill_shape"],
+    "Ellipse":         ["size", "opacity", "fill_shape"],
+    "Fill":            ["tolerance"],
+    "Magic Wand":      ["tolerance"],
+    "Gradient":        [],
+    "Text":            [],
+    "Picker":          [],
+    "Move":            [],
+    "Transform":       [],
+    "Marquee":         [],
+    "Lasso":           [],
+    "Sel Transform":   [],
 }
 
 
@@ -292,7 +292,7 @@ class ToolPanel(QWidget):
     # --- internals ----------------------------------------------------------
 
     def _add_button(self, name: str) -> None:
-        if name == "\U0001f58c\ufe0f Brush":  # 🖌️ Brush — split button with preset picker
+        if name == "Brush":  # 🖌️ Brush — split button with preset picker
             btn = QToolButton()
             btn.setText(name)
             btn.setCheckable(True)
@@ -350,7 +350,7 @@ class ToolPanel(QWidget):
         tool.
         """
         from PyQt6.QtWidgets import QMenu
-        btn = self._buttons.get("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
+        btn = self._buttons.get("Brush")  # 🖌️ Brush
         if btn is None or not isinstance(btn, QToolButton):
             return
         menu = QMenu(btn)
@@ -459,10 +459,10 @@ class ToolPanel(QWidget):
         if hasattr(self, "spacing_slider"):
             self.spacing_slider.setValue(int(preset.spacing * 100))
         # Check the Brush button and emit tool_selected so canvas switches.
-        btn = self._buttons.get("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
+        btn = self._buttons.get("Brush")  # 🖌️ Brush
         if btn is not None:
             btn.setChecked(True)
-        self.tool_selected.emit("\U0001f58c\ufe0f Brush")  # 🖌️ Brush
+        self.tool_selected.emit("Brush")  # 🖌️ Brush
 
     # --- handlers -----------------------------------------------------------
 

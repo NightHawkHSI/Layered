@@ -74,15 +74,21 @@ set "PY_BIN=%VENV%\Scripts\python.exe"
 
 call :stage 45 "Installing Dependencies"
 echo    %B%-%N% Upgrading %G%pip%N%...
-"%PY_BIN%" -m pip install --upgrade pip >> "%LOGFILE%" 2>&1
+"%PY_BIN%" -m pip install --upgrade pip --quiet --no-input --disable-pip-version-check >> "%LOGFILE%" 2>&1
 
 if exist "%ROOT%\requirements.txt" (
-    echo    %B%^>%N% Installing from %C%requirements.txt%N%...
-    "%PY_BIN%" -m pip install -r "%ROOT%\requirements.txt" >> "%LOGFILE%" 2>&1
+    echo    %B%^>%N% Installing from %C%requirements.txt%N%  %Y%^(live progress below^)%N%
+    echo    %Y%[!]%N% PyQt6 + Pillow + NumPy total ~%W%100 MB%N% -- do %R%NOT%N% press any key.
+    echo    %Y%[!]%N% "Installing collected packages" step extract ~3 min, no progress bar. Normal.
+    echo.
+    set "PYTHONIOENCODING=utf-8"
+    set "PYTHONUNBUFFERED=1"
+    powershell -NoProfile -Command "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[System.Text.UTF8Encoding]::new(); & '%PY_BIN%' -m pip install -r '%ROOT%\requirements.txt' --no-input --disable-pip-version-check --progress-bar on -v 2>&1 | ForEach-Object { $line = $_.ToString(); Write-Host $line; $line | Out-File -Append -FilePath '%LOGFILE%' -Encoding utf8 }"
     if errorlevel 1 goto :fail_pyinstaller
+    echo.
 )
 echo    %B%^>%N% Package: %C%pyinstaller%N%
-"%PY_BIN%" -m pip install pyinstaller >> "%LOGFILE%" 2>&1
+"%PY_BIN%" -m pip install pyinstaller --quiet --no-input --disable-pip-version-check >> "%LOGFILE%" 2>&1
 
 call :stage 60 "Asset Processing"
 if exist "%ROOT%\Icon.png" if not exist "%ROOT%\Icon.ico" (

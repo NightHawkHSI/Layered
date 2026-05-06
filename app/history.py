@@ -32,10 +32,24 @@ def clone_stack(stack: LayerStack) -> LayerStack:
     return new
 
 
+def _clone_selection(sel):
+    """Return a deep copy of a Selection (or None)."""
+    if sel is None:
+        return None
+    from PIL import Image as _Image
+    # Import lazily to avoid circular import at module load time.
+    try:
+        from .project import Selection
+    except Exception:
+        return None
+    return Selection(bbox=sel.bbox, mask=sel.mask.copy(), is_full=sel.is_full)
+
+
 @dataclass
 class Snapshot:
     label: str
     stack: LayerStack
+    selection: object = field(default=None)  # Optional[Selection]
 
 
 class History:
@@ -44,9 +58,13 @@ class History:
         self.index: int = -1
         self.max_size = max_size
 
-    def commit(self, label: str, stack: LayerStack) -> None:
+    def commit(self, label: str, stack: LayerStack, selection=None) -> None:
         del self.entries[self.index + 1:]
-        self.entries.append(Snapshot(label=label, stack=clone_stack(stack)))
+        self.entries.append(Snapshot(
+            label=label,
+            stack=clone_stack(stack),
+            selection=_clone_selection(selection),
+        ))
         if len(self.entries) > self.max_size:
             drop = len(self.entries) - self.max_size
             del self.entries[:drop]
@@ -78,7 +96,11 @@ class History:
 
     def _restore_at(self, i: int) -> Snapshot:
         snap = self.entries[i]
-        return Snapshot(label=snap.label, stack=clone_stack(snap.stack))
+        return Snapshot(
+            label=snap.label,
+            stack=clone_stack(snap.stack),
+            selection=_clone_selection(snap.selection),
+        )
 
     def labels(self) -> list[str]:
         return [s.label for s in self.entries]

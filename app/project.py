@@ -58,7 +58,7 @@ class Project:
     selection: Optional[Selection] = None
 
     def commit(self, label: str) -> None:
-        self.history.commit(label, self.stack)
+        self.history.commit(label, self.stack, self.selection)
 
     @classmethod
     def blank(cls, width: int, height: int, name: str = "Untitled") -> "Project":

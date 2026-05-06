@@ -210,6 +210,16 @@ Layered/
 │           └── <Tool>/
 │               ├── tool.py       # Required — defines TOOL_CLASS = MyTool
 │               └── tool.json     # Optional manifest (display name, category override)
+│   │   ├── Paint/                #   Brush · Eraser · Fill · Gradient
+│   │   ├── Draw/                 #   Line · Rectangle · Ellipse
+│   │   ├── Shapes/               #   Triangle · Star · Pentagon · Diamond · Hexagon
+│   │   ├── Lines/                #   Arrow · Curve · Dashed Line
+│   │   ├── Custom Brushes/       #   Spray · Square Brush · Scatter  ← drag & drop here
+│   │   ├── Select/               #   Lasso · Marquee · Magic Wand · Sel Transform
+│   │   ├── Effects/              #   Blur · Sharpen · Smudge · Clone Stamp
+│   │   ├── Transform/            #   Move · Transform
+│   │   ├── Text/                 #   Text
+│   │   └── Utility/              #   Picker
 ├── 📁 Brushes/                   # ← Brush presets (size/hardness/opacity/...)
 ├── 📁 docs/
 │   └── PLUGIN_API.md             # Full plugin API reference
@@ -270,11 +280,46 @@ Tools and brush presets live in two separate trees:
 { "name": "Marker", "icon": "🖊", "size": 20, "hardness": 0.95, "opacity": 1.0, "spacing": 0.05 }
 ```
 
-### Adding a custom tool
+### Drag-and-drop custom tools
+
+The `Plugins/Brushes/Custom Brushes/` folder is designed for user-created tools — just **drag a new folder in** and it appears in the tool panel on next launch. No registration, no config.
 
 ```text
-Plugins/Brushes/Paint/Marker/
-└── tool.py        # exposes TOOL_CLASS — that's the only required file
+Plugins/Brushes/
+└── Custom Brushes/          ← drop your tool folder here
+    ├── Spray/
+    │   └── tool.py
+    ├── Square Brush/
+    │   └── tool.py
+    ├── Scatter/
+    │   └── tool.py
+    └── YourTool/            ← copy this pattern
+        └── tool.py          ← only file required
+```
+
+See `Plugins/Brushes/Custom Brushes/HOW_TO_ADD_TOOLS.md` for a full walkthrough with copy-paste templates for both simple tools and shape tools with resize handles.
+
+### Adding a custom tool (minimal template)
+
+```python
+# Plugins/Brushes/Paint/Marker/tool.py
+from app.tools import Tool
+from app.layer import Layer
+
+class MarkerTool(Tool):
+    name = "Marker"
+    commit_on = "release"   # "press" | "release" | None
+
+    def press(self, layer: Layer, x: int, y: int) -> None:
+        pass
+
+    def move(self, layer: Layer, x: int, y: int) -> None:
+        pass
+
+    def release(self, layer: Layer, x: int, y: int) -> None:
+        super().release(layer, x, y)   # required
+
+TOOL_CLASS = MarkerTool
 ```
 
 ```python
@@ -314,13 +359,16 @@ Discovery is automatic on launch — no registration code, no menu wiring. The f
 
 ```text
 Plugins/Brushes/
-├── Paint/        →  [ Paint ▼ ]   Brush · Eraser · Fill · Gradient
-├── Select/       →  [ Select ▼ ]  Lasso · Marquee · Magic Wand · Sel Transform
-├── Draw/         →  [ Draw ▼ ]    Line · Rectangle · Ellipse
-├── Effects/      →  [ Effects ▼ ] Blur · Sharpen · Smudge · Clone Stamp
-├── Transform/    →  [ Transform ▼ ] Move · Transform
-├── Text/         →  [ Text ▼ ]    Text
-└── Utility/      →  [ Utility ▼ ] Picker
+├── Paint/          →  [ Paint ▼ ]          Brush · Eraser · Fill · Gradient
+├── Draw/           →  [ Draw ▼ ]           Line · Rectangle · Ellipse
+├── Shapes/         →  [ Shapes ▼ ]         Triangle · Star · Pentagon · Diamond · Hexagon
+├── Lines/          →  [ Lines ▼ ]          Arrow · Curve · Dashed Line
+├── Custom Brushes/ →  [ Custom Brushes ▼ ] Spray · Square Brush · Scatter
+├── Select/         →  [ Select ▼ ]         Lasso · Marquee · Magic Wand · Sel Transform
+├── Effects/        →  [ Effects ▼ ]        Blur · Sharpen · Smudge · Clone Stamp
+├── Transform/      →  [ Transform ▼ ]      Move · Transform
+├── Text/           →  [ Text ▼ ]           Text
+└── Utility/        →  [ Utility ▼ ]        Picker
 ```
 
 ---

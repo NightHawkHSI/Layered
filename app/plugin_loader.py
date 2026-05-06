@@ -159,6 +159,11 @@ def load_plugins(
         ]
 
         if not plugin_classes:
+            # tool.py files expose TOOL_CLASS, not Plugin — handled by
+            # tool_loader, so skip silently without polluting the log.
+            if hasattr(module, "TOOL_CLASS"):
+                registry.plugins.append(loaded)
+                continue
             loaded.error = "no Plugin subclass found"
             plugin_logger.warning(loaded.error)
             registry.plugins.append(loaded)

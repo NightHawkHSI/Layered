@@ -1,5 +1,60 @@
 # Changelog
 
+## 2026-05-06 — Custom Tool Categories, Selection Undo & Rotation Fix
+
+### Added
+1. **`Plugins/Brushes/Shapes/` — five new shape tools.**
+   Triangle, Star, Pentagon, Diamond, Hexagon — each drag-to-draw with
+   resize/move handles inherited from `_ShapeTool`. Shift-drag locks
+   proportions; Fill Shape toggle switches between filled and outline
+   rendering. Tools are fully auto-discovered and appear under a
+   **Shapes** split-button in the Tools dock.
+
+2. **`Plugins/Brushes/Lines/` — three new line tools.**
+   - **Arrow** — straight line with a proportionally scaled filled
+     arrowhead at the release point.
+   - **Curve** — quadratic Bezier: press sets the anchor, drag pulls the
+     control point with a live preview, release commits the end point.
+   - **Dashed Line** — dash and gap lengths scale with `brush_size`.
+
+3. **`Plugins/Brushes/Custom Brushes/` — three new brush tools.**
+   - **Spray** — airbrush effect; pixel density scales with opacity,
+     radius scales with brush size, positions sampled via `_walk`.
+   - **Square Brush** — hard square stamp along the stroke path using
+     `alpha_composite`; spacing driven by `brush_spacing`.
+   - **Scatter** — random-size dot splatter for grungy / textured strokes.
+
+4. **`Plugins/Brushes/Custom Brushes/HOW_TO_ADD_TOOLS.md`** — drop-in
+   authoring guide with a minimal `Tool` template and a full `_ShapeTool`
+   subclass example. Anyone can copy a folder in and have a working tool
+   on next launch — no registration code needed.
+
+### Fixed
+5. **Magic Wand undo / redo did not work.**
+   `History.commit()` only snapshotted the layer stack; `proj.selection`
+   was stored separately and never captured. `Snapshot` now carries an
+   optional `selection` field. `History.commit()` accepts and deep-copies
+   it; `_restore_at()` returns a cloned copy. `Project.commit()` passes
+   `self.selection`. `_apply_snapshot_stack()` in `main_window.py` now
+   receives the full `Snapshot` (not just `.stack`) and writes
+   `snap.selection` back to `proj.selection`. `_on_undo`, `_on_redo`,
+   and `_on_history_jump` updated accordingly
+   (`app/history.py`, `app/project.py`, `app/main_window.py`).
+
+6. **Transform rotation squashed the image into the original bbox.**
+   During a rotate drag, `_apply()` was called with `self._cur_bbox`
+   (which accumulated updates), causing each frame to re-rotate an
+   already-rotated size. Fixed: rotation mode now always calls
+   `_apply(layer, self._bbox0)` so every frame starts from the pristine
+   pre-drag crop. Inside `_apply()`, when `_mode == "rotate"` the bbox
+   is re-centered on the original bbox center and expanded to the AABB
+   of the rotated image (`rw, rh = img.size` after `rotate(expand=True)`)
+   so no content is clipped during the live preview. Pressing Enter
+   applies the existing `_crop_layer_to_canvas()` clip, cutting anything
+   that extends past the canvas edge (`Plugins/_builtin_tools.py`).
+
+---
+
 ## 2026-05-05 — Plugin-Driven Tools & Settings UI
 
 ### Added

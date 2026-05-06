@@ -32,6 +32,10 @@ def main() -> int:
 
         from app.logger import get_logger, install_excepthook
         from app.main_window import ICON_PATH, ICON_PNG_PATH, MainWindow
+        try:
+            from app.splash import SplashScreen
+        except Exception:
+            SplashScreen = None  # type: ignore[assignment,misc]
     except Exception:
         report = _emergency_crash(*sys.exc_info())
         msg = (
@@ -59,10 +63,23 @@ def main() -> int:
     elif ICON_PNG_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
+    icon_png = ICON_PNG_PATH if ICON_PNG_PATH.exists() else None
+    splash = SplashScreen(icon_png) if SplashScreen is not None else None
+    if splash is not None:
+        splash.show()
+        splash.set_progress(3, "Initializing Qt runtime...")
+        app.processEvents()
+        splash.set_progress(8, "Preparing workspace...")
+
     try:
-        window = MainWindow()
+        window = MainWindow(splash=splash)
+        if splash is not None:
+            splash.set_progress(100, "Ready — welcome back")
+            splash.finish(window)
         window.show()
     except Exception:
+        if splash is not None:
+            splash.hide()
         log.critical("Failed to construct main window:\n%s", traceback.format_exc())
         raise
 

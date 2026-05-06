@@ -1,4 +1,4 @@
-"""Select / Lasso — freehand polygon selection."""
+"""Select / Lasso --- freehand polygon selection."""
 from __future__ import annotations
 from PIL import Image, ImageChops, ImageDraw
 from app.tools import Tool

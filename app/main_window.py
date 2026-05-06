@@ -106,8 +106,9 @@ class NewCanvasDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, width: int = 1024, height: int = 768):
+    def __init__(self, width: int = 1024, height: int = 768, splash=None):
         super().__init__()
+        self._splash = splash
         self.log = get_logger("ui")
         self.setWindowTitle("Layered")
         self.resize(1400, 900)
@@ -122,6 +123,13 @@ class MainWindow(QMainWindow):
             self.log.info("Restored %d project(s) from session", len(restored))
         else:
             self.projects = [Project.blank(width, height)]
+        if self._splash:
+            import time
+            self._splash._shown_at = time.monotonic()
+            count = len(restored) if restored else 0
+            msg = (f"Restored {count} project(s)" if count
+                   else "Creating blank project...")
+            self._splash.set_progress(15, msg)
         self.active_project: int = 0
         self._last_export_dir: Optional[Path] = None
         self._last_open_dir: Optional[Path] = None
@@ -176,6 +184,9 @@ class MainWindow(QMainWindow):
         self.canvas.images_dropped.connect(self._on_images_dropped)
         self.setCentralWidget(self.canvas)
         self._copy_buffer = None  # PIL.Image.Image holding last copied region
+        if self._splash:
+            w, h = self.current().stack.width, self.current().stack.height
+            self._splash.set_progress(35, f"Building canvas ({w}x{h})...")
 
         # --- panels ---
         self.layer_panel = LayerPanel(self.current().stack)
@@ -249,6 +260,10 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
+        if self._splash:
+            self._splash.set_progress(45, "Wiring layer + history panels...")
+            self._splash.set_progress(55, "Wiring tools, colors, text...")
+            self._splash.set_progress(62, "Wiring console + project tabs...")
 
         # --- plugins ---
         self._plugin_event_listeners: dict[str, list] = {}
@@ -275,17 +290,27 @@ class MainWindow(QMainWindow):
         self.log.info("Main window initialized: %dx%d", width, height)
         # Defer plugin discovery + import so the window is visible before
         # importlib overhead runs (biggest contributor to slow cold start).
+        if self._splash:
+            self._splash.set_progress(72, "Building menus...")
+            self._splash.set_progress(78, "Discovering plugins...")
         QTimer.singleShot(0, self._deferred_plugin_init)
 
     def _deferred_plugin_init(self) -> None:
         """Load plugins on the first idle tick so the window paints first."""
+        if self._splash:
+            self._splash.set_progress(82, "Importing plugin modules...")
         self.plugins = load_plugins(
             PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
         )
+        if self._splash:
+            n = len(self.plugins.tools) + len(self.plugins.filters) + len(self.plugins.actions)
+            self._splash.set_progress(88, f"Registering {n} plugin item(s)...")
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
             self.tool_panel.add_tool_button(name)
 
+        if self._splash:
+            self._splash.set_progress(92, "Loading brush packs...")
         # Load Plugins/Brushes/<Group>/<Tool>/tool.py — populate Tool Panel
         # with one [Group ▼] split-button per group, sub-tools in dropdown.
         brush_tools, brush_cats = load_brush_tools(PLUGINS_DIR / "Brushes", self.tool_ctx)
@@ -308,6 +333,21 @@ class MainWindow(QMainWindow):
             "Plugins loaded: %d tool(s), %d filter(s), %d action(s)",
             len(self.plugins.tools), len(self.plugins.filters), len(self.plugins.actions),
         )
+        if self._splash:
+            import time
+            n_brush = len(brush_tools)
+            self._splash.set_progress(96, f"Finalizing — {n_brush} brush(es) ready")
+            self._splash.set_progress(100, "Ready — happy painting")
+            elapsed_ms = int((time.monotonic() - getattr(self._splash, "_shown_at", 0)) * 1000)
+            remaining_ms = max(0, 3000 - elapsed_ms)
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(remaining_ms, self._finish_splash)
+
+    def _finish_splash(self) -> None:
+        """Close the splash screen; called via QTimer after the minimum display time."""
+        if self._splash is not None:
+            self._splash.finish(self)
+            self._splash = None
 
     def _post_plugin_tools_loaded(self) -> None:
         """Wire special tool hooks and activate the default tool after plugins load."""
@@ -728,12 +768,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_plugin_event_listeners"):
             self.emit_event("layer_changed", self.current().stack.active_index)
 
-    def _apply_snapshot_stack(self, new_stack: LayerStack) -> None:
+    def _apply_snapshot_stack(self, snap) -> None:
         proj = self.current()
-        proj.stack = new_stack
+        proj.stack = snap.stack
+        proj.selection = getattr(snap, "selection", None)
         proj.dirty = True
-        self.canvas.set_layer_stack(new_stack, reset_view=False)
-        self.layer_panel.stack = new_stack
+        self.canvas.set_layer_stack(snap.stack, reset_view=False)
+        self.layer_panel.stack = snap.stack
         self.layer_panel.refresh()
         self.canvas.refresh()
         self._refresh_tabs()
@@ -742,7 +783,7 @@ class MainWindow(QMainWindow):
         snap = self.current().history.undo()
         if snap is None:
             return
-        self._apply_snapshot_stack(snap.stack)
+        self._apply_snapshot_stack(snap)
         self._refresh_history_panel()
         self.statusBar().showMessage(f"Undo: {snap.label}")
 
@@ -750,7 +791,7 @@ class MainWindow(QMainWindow):
         snap = self.current().history.redo()
         if snap is None:
             return
-        self._apply_snapshot_stack(snap.stack)
+        self._apply_snapshot_stack(snap)
         self._refresh_history_panel()
         self.statusBar().showMessage(f"Redo: {snap.label}")
 
@@ -758,7 +799,7 @@ class MainWindow(QMainWindow):
         snap = self.current().history.jump(index)
         if snap is None:
             return
-        self._apply_snapshot_stack(snap.stack)
+        self._apply_snapshot_stack(snap)
         self._refresh_history_panel()
         self.statusBar().showMessage(f"Jump: {snap.label}")
 
@@ -1227,9 +1268,12 @@ class MainWindow(QMainWindow):
         if proj.selection is None:
             self.statusBar().showMessage("No selection to transform.")
             return
-        if "🔧 Sel Transform" not in self.tools:
+        sel_transform_name = next(
+            (n for n in self.tools if n in ("🔧 Sel Transform", "Sel Transform")), None
+        )
+        if sel_transform_name is None:
             return
-        self._on_tool_selected("🔧 Sel Transform")
+        self._on_tool_selected(sel_transform_name)
 
     def _fill_selection_with(self, color) -> None:
         proj = self.current()
@@ -1950,9 +1994,13 @@ class MainWindow(QMainWindow):
         self._paste_into_layer(img, bb, source_proj, source_label, extend=False)
 
     def _activate_transform_tool(self) -> None:
-        if "🔲 Transform" not in self.tools:
+        # Find the transform tool by name (handles both emoji and plain variants)
+        transform_name = next(
+            (n for n in self.tools if n in ("🔲 Transform", "Transform")), None
+        )
+        if transform_name is None:
             return
-        self._on_tool_selected("🔲 Transform")
+        self._on_tool_selected(transform_name)
         # Pull keyboard focus to the canvas so Enter immediately commits
         # the transform (otherwise focus may sit on a panel/spinbox and
         # Return never reaches MainWindow.keyPressEvent).
@@ -2066,6 +2114,10 @@ class MainWindow(QMainWindow):
             self._confirm_selection()
             event.accept()
             return
+        if event.key() == _Qt.Key.Key_Escape:
+            self._cancel_tool()
+            event.accept()
+            return
         if event.key() in (_Qt.Key.Key_Delete, _Qt.Key.Key_Backspace):
             if self.current().selection is not None:
                 self._erase_selection()
@@ -2096,23 +2148,45 @@ class MainWindow(QMainWindow):
         #     beyond the canvas (or sits at a non-zero offset) leaves
         #     downstream tools — box brush, fill, etc. — misaligned
         #     against the visible pixels.
-        if active_name == "🔲 Transform":
+        if active_name in ("🔲 Transform", "Transform", "✋ Move", "Move"):
             layer = proj.stack.active
             if layer is not None:
                 self._crop_layer_to_canvas(layer, proj.stack.width, proj.stack.height)
                 proj.stack.invalidate_cache()
                 self.canvas.refresh()
                 self._on_action_committed("Transform: apply")
-        # 2b) Transform tool has no commit() but its handles linger as a
-        #     canvas overlay until another tool is picked. Switch back
-        #     to Brush so Enter cleanly exits the post-paste transform.
-        if active_name in ("🔲 Transform", "🔧 Sel Transform", "✋ Move") and "🖌️ Brush" in self.tools:
-            self._on_tool_selected("🖌️ Brush")
+        # 2b) Transform/Move tool — switch back to Brush so Enter cleanly exits.
+        for _tname in ("Transform", "Move", "Sel Transform", "🔲 Transform", "🔧 Sel Transform", "✋ Move"):
+            if active_name == _tname:
+                default = next((t for t in self.tools.values() if getattr(t, "is_default", False)), None)
+                if default is None:
+                    default = self.tools.get("Brush") or self.tools.get("🖌️ Brush")
+                if default is not None:
+                    self._on_tool_selected(next(n for n, t in self.tools.items() if t is default))
+                break
         # 3) Drop the marching-ants selection.
         if proj.selection is not None:
             proj.selection = None
             self.canvas.refresh()
             self.statusBar().showMessage("Selection committed")
+
+    def _cancel_tool(self) -> None:
+        """Esc: cancel any active transform drag and/or clear the selection."""
+        tool = self.canvas.tool
+        # Cancel transform drag (restore layer to pre-drag state)
+        cancel = getattr(tool, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
+            self.canvas.refresh()
+        # Clear selection
+        proj = self.current()
+        if proj.selection is not None:
+            proj.selection = None
+            self.canvas.refresh()
+            self.statusBar().showMessage("Selection cleared")
 
     def _crop_layer_to_canvas(self, layer, cw: int, ch: int) -> None:
         """Bake layer.image+offset into a canvas-sized RGBA buffer at (0,0).
@@ -2316,7 +2390,7 @@ class MainWindow(QMainWindow):
         if categories:
             self.tool_panel.set_tool_categories(categories)
 
-
+    def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._schedule_layout_save()
 
