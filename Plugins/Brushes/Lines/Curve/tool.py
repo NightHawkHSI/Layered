@@ -22,6 +22,22 @@ class CurveTool(Tool):
     name = "Curve"
     commit_on = "release"
 
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t); l.setStyleSheet("font-size:11px;"); return l
+        row.addWidget(lbl('Line Width'))
+        _s = SliderField(1, 50, max(1, int(ctx.brush_size)), slider_width=110)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(_s)
+        row.addStretch()
+        return host
+
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._start = (x, y)
         self._ctrl  = (x, y)

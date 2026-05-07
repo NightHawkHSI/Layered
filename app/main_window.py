@@ -47,6 +47,7 @@ from .plugin_loader import (
 )
 from .project import Project
 from .project_io import PROJECT_EXT, PROJECT_FILTER, load_project, save_project
+from .preferences import Preferences
 from .session import load_session, save_session
 from .tool_loader import load_tools as load_brush_tools
 from .tools import ToolContext
@@ -70,6 +71,7 @@ else:
     RESOURCE_DIR = PROJECT_DIR
 PLUGINS_DIR = PROJECT_DIR / "Plugins"
 SESSION_DIR = PROJECT_DIR / "session"
+PREFS_PATH  = PROJECT_DIR / "prefs.json"
 BRUSHES_DIR = PROJECT_DIR / "Brushes"
 ICON_PATH = RESOURCE_DIR / "Icon.ico"
 if not ICON_PATH.exists():
@@ -117,7 +119,13 @@ class MainWindow(QMainWindow):
         elif ICON_PNG_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
-        restored = load_session(SESSION_DIR)
+        self.prefs = Preferences(PREFS_PATH)
+        self._apply_accent(self.prefs.accent_color)
+
+        if self.prefs.restore_session:
+            restored = load_session(SESSION_DIR)
+        else:
+            restored = []
         if restored:
             self.projects: list[Project] = restored
             self.log.info("Restored %d project(s) from session", len(restored))
@@ -275,6 +283,7 @@ class MainWindow(QMainWindow):
         self._plugin_snapshot: dict = {}
         self._plugin_pending_snapshot: Optional[dict] = None
         self._brush_presets: dict = {}
+        self._brush_tool_names: set[str] = set()
         # Hot reload watcher: started after deferred init so it doesn't
         # fire before plugins have been loaded.
         self._plugin_watch_timer = QTimer(self)
@@ -307,6 +316,7 @@ class MainWindow(QMainWindow):
             self._splash.set_progress(88, f"Registering {n} plugin item(s)...")
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
+            self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
             self.tool_panel.add_tool_button(name)
 
         if self._splash:
@@ -319,6 +329,8 @@ class MainWindow(QMainWindow):
                 continue
             self.tools[name] = tool
             self.plugins.tools[name] = tool
+            self._brush_tool_names.add(name)
+            self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
         if brush_cats:
             self.tool_panel.set_tool_categories(brush_cats)
 
@@ -487,6 +499,8 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self._act("Clear Active Layer", self._on_clear_layer))
         edit_menu.addAction(self._act("Delete Active Layer", self._on_delete_layer, "Ctrl+Delete"))
+        edit_menu.addSeparator()
+        edit_menu.addAction(self._act("Preferences\u2026", self._on_preferences, "Ctrl+,"))
 
         image_menu = mb.addMenu("&Image")
         image_menu.addAction(self._act("Resize Canvas…", self._on_resize_canvas))
@@ -587,6 +601,41 @@ class MainWindow(QMainWindow):
 
         help_menu = mb.addMenu("&Help")
         help_menu.addAction(self._act("About", self._on_about))
+
+    def _apply_accent(self, hex_color: str) -> None:
+        """Recolour the highlight/selection role across the whole app."""
+        from PyQt6.QtGui import QPalette
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QColor
+        app = QApplication.instance()
+        if app is None:
+            return
+        palette = app.style().standardPalette()
+        c = QColor(hex_color)
+        if not c.isValid():
+            return
+        palette.setColor(QPalette.ColorRole.Highlight, c)
+        luma = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
+        text_c = QColor("#ffffff" if luma < 0.55 else "#000000")
+        palette.setColor(QPalette.ColorRole.HighlightedText, text_c)
+        palette.setColor(QPalette.ColorRole.Link, c)
+        app.setPalette(palette)
+        # Also patch slider handles and checked tool-buttons via QSS so they
+        # pick up the accent even in stylesheets that override the palette.
+        app.setStyleSheet(
+            app.styleSheet().split("/* __accent */")[0]
+            + f"/* __accent */\n"
+            f"QSlider::handle:horizontal {{ background:{hex_color}; "
+            f"border-radius:4px; width:12px; height:12px; "
+            f"margin:-4px 0; }}\n"
+            f"QToolButton:checked {{ background:{hex_color}; "
+            f"color:{'#fff' if luma < 0.55 else '#000'}; border-radius:3px; }}\n"
+        )
+
+    def _on_preferences(self) -> None:
+        from .ui.prefs_dialog import PrefsDialog
+        dlg = PrefsDialog(self.prefs, self._apply_accent, parent=self)
+        dlg.exec()
 
     def _act(self, name: str, slot, shortcut: Optional[str] = None) -> QAction:
         a = QAction(name, self)
@@ -2462,8 +2511,8 @@ class MainWindow(QMainWindow):
         self._plugin_reload_in_progress = True
         self.statusBar().showMessage("Reloading plugins…")
         try:
-            # Drop the active tool if it came from a plugin so we don't
-            # paint with a dangling reference after purge.
+            # Drop the active tool if it came from a plugin or a brush tool
+            # so we don't paint with a dangling reference after purge.
             current_tool = getattr(self.canvas, "tool", None)
             if current_tool is not None and current_tool in self.plugins.tools.values():
                 self.canvas.set_tool(None)
@@ -2474,6 +2523,16 @@ class MainWindow(QMainWindow):
                     self.tool_panel.remove_tool_button(name)
                 except Exception:
                     self.log.exception("remove_tool_button(%s) failed", name)
+
+            # Also remove all brush tools (load_brush_tools entries) so
+            # stale instances don't persist after a hot-reload.
+            for name in list(self._brush_tool_names):
+                self.tools.pop(name, None)
+                try:
+                    self.tool_panel.remove_tool_button(name)
+                except Exception:
+                    self.log.exception("remove_tool_button(%s) brush failed", name)
+            self._brush_tool_names.clear()
 
             for title in list(self._plugin_dock_titles):
                 dock = self._docks.pop(title, None)
@@ -2504,16 +2563,35 @@ class MainWindow(QMainWindow):
             )
             for name, tool in self.plugins.tools.items():
                 self.tools[name] = tool
+                self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
                 self.tool_panel.add_tool_button(name)
+
+            # Re-load all brush tools from Plugins/Brushes/ so added,
+            # removed, or edited tool.py files take effect immediately.
+            brush_tools, brush_cats = load_brush_tools(
+                PLUGINS_DIR / "Brushes", self.tool_ctx
+            )
+            for name, tool in brush_tools.items():
+                if name not in self.tools:
+                    self.tools[name] = tool
+                    self.plugins.tools[name] = tool
+                self._brush_tool_names.add(name)
+                self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
+            if brush_cats:
+                self.tool_panel.set_tool_categories(brush_cats)
+
             self._post_plugin_tools_loaded()
 
             self._build_menus()
             # Refresh snapshot: a reload triggered by edit means the new
             # mtimes are now the baseline.
             self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
+            n_brush = len(brush_tools)
+            n_plugin = len([p for p in self.plugins.plugins if p.plugin is not None])
             self.statusBar().showMessage(
-                f"Plugins reloaded: {len([p for p in self.plugins.plugins if p.plugin is not None])} ok",
+                f"Reloaded: {n_plugin} plugin(s), {n_brush} brush tool(s)",
                 3000,
             )
         finally:
             self._plugin_reload_in_progress = False
+

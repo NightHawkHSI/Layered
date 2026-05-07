@@ -247,14 +247,21 @@ def shutdown_plugins(registry: PluginRegistry) -> None:
 
 
 PLUGIN_MODULE_PREFIX = "layered_plugin_"
+BRUSH_TOOL_MODULE_PREFIX = "_layered_tool_"
 
 
 def purge_plugin_modules() -> int:
     """Drop all plugin-namespaced entries from sys.modules so the next
     load re-executes their source. Returns the number of entries removed.
+    Covers both regular plugin modules (layered_plugin_*) and brush-tool
+    modules (_layered_tool_*) so hot-reload picks up changed tool.py files.
     Submodules of plugin packages share the prefix and are dropped too.
     """
-    stale = [k for k in sys.modules if k.startswith(PLUGIN_MODULE_PREFIX)]
+    stale = [
+        k for k in sys.modules
+        if k.startswith(PLUGIN_MODULE_PREFIX)
+        or k.startswith(BRUSH_TOOL_MODULE_PREFIX)
+    ]
     for k in stale:
         sys.modules.pop(k, None)
     return len(stale)

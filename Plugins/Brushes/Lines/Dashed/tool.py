@@ -20,6 +20,35 @@ class DashedLineTool(Tool):
     name = "Dashed Line"
     commit_on = "release"
 
+    def __init__(self, ctx=None):
+        super().__init__(ctx)
+        self.dash_mult = 4  # dash = line_width * dash_mult
+        self.gap_mult  = 2  # gap  = line_width * gap_mult
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t); l.setStyleSheet("font-size:11px;"); return l
+        row.addWidget(lbl('Line Width'))
+        _s = SliderField(1, 50, max(1, int(ctx.brush_size)), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Dash'))
+        _s = SliderField(1, 20, int(self.dash_mult), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'dash_mult', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Gap'))
+        _s = SliderField(1, 20, int(self.gap_mult), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'gap_mult', int(v)))
+        row.addWidget(_s)
+        row.addStretch()
+        return host
+
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._origin = (x, y)
         self._snap   = layer.image.copy()
@@ -47,9 +76,9 @@ class DashedLineTool(Tool):
         ln = math.hypot(dx, dy)
         if ln < 1:
             return
-        w    = max(1, self.ctx.brush_size)
-        dash = max(6, w * 4)
-        gap  = max(4, w * 2)
+        w      = max(1, self.ctx.brush_size)
+        dash   = max(2, w * self.dash_mult)
+        gap    = max(1, w * self.gap_mult)
         period = dash + gap
         d = ImageDraw.Draw(layer.image)
         t = 0.0

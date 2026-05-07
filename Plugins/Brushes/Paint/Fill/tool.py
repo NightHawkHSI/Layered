@@ -18,4 +18,33 @@ if _KEY not in sys.modules:
     sys.modules[_KEY] = mod
     spec.loader.exec_module(mod)
 
-TOOL_CLASS = sys.modules[_KEY].FillTool
+
+_Base = sys.modules[_KEY].FillTool
+
+
+class FillTool(  # type: ignore[misc]
+    _Base,
+):
+    name = 'Fill'
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t)
+            l.setStyleSheet("font-size:11px;")
+            return l
+        row.addWidget(lbl('Tolerance'))
+        s = SliderField(0, 255, max(0, int(ctx.fill_tolerance)), slider_width=120)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'fill_tolerance', int(v)))
+        row.addWidget(s)
+        row.addStretch()
+        return host
+
+
+TOOL_CLASS = FillTool
+

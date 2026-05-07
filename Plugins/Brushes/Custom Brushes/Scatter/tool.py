@@ -20,6 +20,7 @@ class ScatterBrushTool(Tool):
     """Scatter brush: random dots along the stroke.
     Settings: Density (dots per stamp), Spread (radius %), Max Dot Size."""
     name = "Scatter"
+    icon = "✣"
 
     def __init__(self, ctx=None):
         super().__init__(ctx)

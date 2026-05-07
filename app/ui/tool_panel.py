@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -37,6 +37,88 @@ from .slider_field import SliderField
 
 # Which brush-settings each tool actually uses. Tools missing from the map
 # get no settings shown.
+# Icon glyph per tool — prefix text so the eye scans the row by shape, not
+# letter. Falls back to "" (no icon) when the tool is not listed.
+TOOL_ICONS: dict[str, str] = {
+    "Brush":         "🖌",
+    "Eraser":        "🩹",
+    "Blur":          "💧",
+    "Sharpen":       "🔪",
+    "Smudge":        "👆",
+    "Clone Stamp":   "🖇",
+    "Line":          "╱",
+    "Rectangle":     "▭",
+    "Ellipse":       "◯",
+    "Fill":          "🪣",
+    "Magic Wand":    "✨",
+    "Gradient":      "🌈",
+    "Text":          "🅰",
+    "Picker":        "💉",
+    "Move":          "✥",
+    "Transform":     "⛶",
+    "Marquee":       "⬚",
+    "Lasso":         "🪢",
+    "Sel Transform": "◫",
+    "Triangle":      "△",
+    "Star":          "★",
+    "Pentagon":      "⬠",
+    "Hexagon":       "⬡",
+    "Diamond":       "◇",
+    "Arrow":         "➤",
+    "Curve":         "∿",
+    "Dashed":        "┈",
+
+}
+
+# Photoshop-ish single-key shortcuts. ApplicationShortcut scope so the key
+# fires regardless of which dock has focus. Tools missing from the map get
+# no shortcut.
+TOOL_SHORTCUTS: dict[str, str] = {
+    "Brush":         "B",
+    "Eraser":        "E",
+    "Fill":          "G",
+    "Gradient":      "Shift+G",
+    "Picker":        "I",
+    "Move":          "V",
+    "Marquee":       "M",
+    "Lasso":         "L",
+    "Magic Wand":    "W",
+    "Text":          "T",
+    "Transform":     "Ctrl+T",
+    "Sel Transform": "Ctrl+Shift+T",
+    "Line":          "U",
+    "Rectangle":     "Shift+U",
+    "Ellipse":       "Alt+U",
+    "Blur":          "R",
+    "Sharpen":       "Shift+R",
+    "Smudge":        "Alt+R",
+    "Clone Stamp":   "S",
+}
+
+# Stylesheet for tool buttons. Bumps checked-state contrast so the active
+# tool reads at a glance and gives a hover hint for affordance.
+_TOOL_BTN_QSS = """
+QPushButton, QToolButton {
+    text-align: left;
+    padding: 4px 8px;
+}
+QPushButton:hover, QToolButton:hover {
+    background: rgba(255,255,255,0.08);
+}
+QPushButton:checked, QToolButton:checked {
+    background: #2a6ad6;
+    color: white;
+    border: 1px solid #4a8af0;
+    font-weight: bold;
+}
+"""
+
+
+def _default_icon_for(name: str) -> str:
+    """Built-in fallback glyph. Custom brushes override this via set_tool_icon."""
+    return TOOL_ICONS.get(name, "")
+
+
 TOOL_SETTINGS: dict[str, list[str]] = {
     "Brush":           ["size", "hardness", "opacity", "spacing"],
     "Eraser":          ["size", "hardness", "opacity", "spacing"],
@@ -70,11 +152,16 @@ class ToolPanel(QWidget):
         self.ctx = ctx
         self._layout_mode = layout
         self._buttons: dict[str, QPushButton] = {}
+        self._shortcuts: dict[str, QShortcut] = {}
+        # Per-tool icon overrides (set by host before adding the button — lets
+        # custom brushes ship their own glyph instead of inheriting TOOL_ICONS).
+        self._icon_overrides: dict[str, str] = {}
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         # Toolbar-mode bookkeeping: per-setting list of QActions to toggle.
         self._setting_actions: dict[str, list[QAction]] = {}
         self._active_tool_name: Optional[str] = None
+        self.setStyleSheet(_TOOL_BTN_QSS)
 
         if layout == "toolbar":
             self._build_toolbar(tools)
@@ -134,7 +221,7 @@ class ToolPanel(QWidget):
         self._grid_host = QWidget()
         self._grid = QGridLayout(self._grid_host)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(2)
+        self._grid.setSpacing(3)
         outer.addWidget(self._grid_host)
         for name in tools.keys():
             self._add_button(name)
@@ -292,9 +379,12 @@ class ToolPanel(QWidget):
     # --- internals ----------------------------------------------------------
 
     def _add_button(self, name: str) -> None:
+        label = self._label_for(name)
+        tip = self._tooltip_for(name)
         if name == "Brush":  # 🖌️ Brush — split button with preset picker
             btn = QToolButton()
-            btn.setText(name)
+            btn.setText(label)
+            btn.setToolTip(tip)
             btn.setCheckable(True)
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -303,27 +393,75 @@ class ToolPanel(QWidget):
             if self._layout_mode == "toolbar":
                 btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                 fm = btn.fontMetrics()
-                btn.setMinimumWidth(fm.horizontalAdvance(name) + 32)
-                btn.setMinimumHeight(26)
+                btn.setMinimumWidth(fm.horizontalAdvance(label) + 32)
+                btn.setMinimumHeight(28)
             else:
+                btn.setMinimumHeight(30)
                 count = self._grid.count()
                 self._grid.addWidget(btn, count // 2, count % 2)
             self._buttons[name] = btn
+            self._install_shortcut(name, btn)
             return
 
-        btn = QPushButton(name)
+        btn = QPushButton(label)
+        btn.setToolTip(tip)
         btn.setCheckable(True)
         btn.clicked.connect(lambda _=False, n=name: self.tool_selected.emit(n))
         self._group.addButton(btn)
         if self._layout_mode == "toolbar":
             btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             fm = btn.fontMetrics()
-            btn.setMinimumWidth(fm.horizontalAdvance(name) + 18)
-            btn.setMinimumHeight(26)
+            btn.setMinimumWidth(fm.horizontalAdvance(label) + 18)
+            btn.setMinimumHeight(28)
         else:
+            btn.setMinimumHeight(30)
             count = self._grid.count()
             self._grid.addWidget(btn, count // 2, count % 2)
         self._buttons[name] = btn
+        self._install_shortcut(name, btn)
+
+    def _label_for(self, name: str) -> str:
+        icon = self._icon_overrides.get(name) or _default_icon_for(name)
+        return f"{icon}  {name}" if icon else name
+
+    def _tooltip_for(self, name: str) -> str:
+        sc = TOOL_SHORTCUTS.get(name)
+        return f"{name}  ({sc})" if sc else name
+
+    def set_tool_icon(self, name: str, icon: str) -> None:
+        """Register a custom glyph for ``name``. Call before ``add_tool_button``
+        / ``set_tool_categories`` for the icon to appear; if the button already
+        exists, its label and tooltip are refreshed in place."""
+        if not icon:
+            return
+        self._icon_overrides[name] = icon
+        btn = self._buttons.get(name)
+        if btn is not None:
+            btn.setText(self._label_for(name))
+            btn.setToolTip(self._tooltip_for(name))
+
+    def _install_shortcut(self, name: str, btn) -> None:
+        seq = TOOL_SHORTCUTS.get(name)
+        if not seq or name in self._shortcuts:
+            return
+        sc = QShortcut(QKeySequence(seq), self)
+        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        sc.activated.connect(lambda b=btn, n=name: self._fire_shortcut(b, n))
+        self._shortcuts[name] = sc
+
+    def _fire_shortcut(self, btn, name: str) -> None:
+        # Don't hijack single-letter keys while user is typing in a text
+        # field, spin box, or any editable widget.
+        from PyQt6.QtWidgets import (
+            QApplication, QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox,
+        )
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        if isinstance(fw, QComboBox) and fw.isEditable():
+            return
+        btn.setChecked(True)
+        self.tool_selected.emit(name)
 
     def add_tool_button(self, name: str, toolbar=None) -> None:
         if name in self._buttons:
@@ -339,6 +477,10 @@ class ToolPanel(QWidget):
         self._group.removeButton(btn)
         btn.setParent(None)
         btn.deleteLater()
+        sc = self._shortcuts.pop(name, None)
+        if sc is not None:
+            sc.setParent(None)
+            sc.deleteLater()
 
     def set_brush_presets(self, presets_by_category: dict) -> None:
         """Populate the Brush button's dropdown menu with category submenus.
@@ -387,43 +529,56 @@ class ToolPanel(QWidget):
             btn.setParent(None)
             btn.deleteLater()
         self._buttons.clear()
+        for sc in self._shortcuts.values():
+            sc.setParent(None)
+            sc.deleteLater()
+        self._shortcuts.clear()
 
         first_btn: QToolButton | None = None
+        first_name: Optional[str] = None
         for _cat, names in ordered:
             if not names:
                 continue
             primary = names[0]
 
             split = QToolButton()
-            split.setText(primary)
+            split.setText(self._label_for(primary))
+            split.setToolTip(self._tooltip_for(primary))
             split.setCheckable(True)
             split.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            split.setMinimumHeight(30)
+            split.setProperty("tool_name", primary)
 
             split.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
             menu = QMenu(split)
             for name in names:
-                action = menu.addAction(name)
+                action = menu.addAction(self._label_for(name))
+                sc = TOOL_SHORTCUTS.get(name)
+                if sc:
+                    action.setShortcut(QKeySequence(sc))
                 action.triggered.connect(
                     lambda _=False, n=name, s=split: self._on_category_pick(n, s)
                 )
             split.setMenu(menu)
 
             split.clicked.connect(
-                lambda _=False, s=split: self.tool_selected.emit(s.text())
+                lambda _=False, s=split: self.tool_selected.emit(s.property("tool_name") or s.text())
             )
 
             self._group.addButton(split)
             self._buttons[primary] = split
             count = self._grid.count()
             self._grid.addWidget(split, count // 2, count % 2)
+            self._install_shortcut(primary, split)
 
             if first_btn is None:
                 first_btn = split
+                first_name = primary
 
         if first_btn is not None:
             first_btn.setChecked(True)
-            self._active_tool_name = first_btn.text()
+            self._active_tool_name = first_name
 
     def _on_category_pick(self, name: str, split_btn: "QToolButton") -> None:
         """Switch the split-button label to ``name`` and emit tool_selected."""
@@ -432,7 +587,9 @@ class ToolPanel(QWidget):
         if old_key and old_key != name:
             self._buttons.pop(old_key)
             self._buttons[name] = split_btn
-        split_btn.setText(name)
+        split_btn.setText(self._label_for(name))
+        split_btn.setToolTip(self._tooltip_for(name))
+        split_btn.setProperty("tool_name", name)
         split_btn.setChecked(True)
         self._active_tool_name = name
         self.tool_selected.emit(name)

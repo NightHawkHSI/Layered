@@ -21,6 +21,35 @@ class ArrowTool(Tool):
     name = "Arrow"
     commit_on = "release"
 
+    def __init__(self, ctx=None):
+        super().__init__(ctx)
+        self.head_size  = 20  # arrowhead length in pixels
+        self.head_spread = 4  # arrowhead spread (tenths: 4 = 0.4)
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t); l.setStyleSheet("font-size:11px;"); return l
+        row.addWidget(lbl('Line Width'))
+        _s = SliderField(1, 50, max(1, int(ctx.brush_size)), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Head Size'))
+        _s = SliderField(5, 80, int(self.head_size), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'head_size', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Head Spread'))
+        _s = SliderField(1, 10, int(self.head_spread), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'head_spread', int(v)))
+        row.addWidget(_s)
+        row.addStretch()
+        return host
+
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._origin = (x, y)
         self._snap = layer.image.copy()
@@ -51,8 +80,8 @@ class ArrowTool(Tool):
         if ln < 4:
             return
         ux, uy = (x1 - x0) / ln, (y1 - y0) / ln
-        h = max(10, w * 5)
-        sp = 0.4
+        h  = max(10, self.head_size)
+        sp = max(0.1, self.head_spread / 10.0)
         lx = x1 - h * (ux - sp * uy)
         ly = y1 - h * (uy + sp * ux)
         rx = x1 - h * (ux + sp * uy)

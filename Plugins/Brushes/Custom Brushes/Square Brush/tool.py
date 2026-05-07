@@ -18,9 +18,38 @@ _clip = _bt._clip_layer_to_selection
 class SquareBrushTool(Tool):
     """Hard-edged square stamp brush - like the round brush but square."""
     name = "Square Brush"
+    icon = "▣"
+
+    def __init__(self, ctx=None):
+        super().__init__(ctx)
+        self.spacing_mult = 1.0  # multiplies ctx.brush_spacing
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t); l.setStyleSheet("font-size:11px;"); return l
+        row.addWidget(lbl('Size'))
+        _s = SliderField(1, 500, max(1, int(ctx.brush_size)), slider_width=100)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Opacity'))
+        _s = SliderField(1, 100, max(1, int(ctx.brush_opacity)), slider_width=100)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_opacity', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Spacing'))
+        _s = SliderField(1, 20, int(self.spacing_mult * 10), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'spacing_mult', v / 10.0))
+        row.addWidget(_s)
+        row.addStretch()
+        return host
 
     def _spacing(self) -> float:
-        return max(1.0, self.ctx.brush_size * self.ctx.brush_spacing)
+        return max(1.0, self.ctx.brush_size * self.ctx.brush_spacing * self.spacing_mult)
 
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._last_pt = (x, y)

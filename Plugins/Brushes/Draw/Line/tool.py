@@ -18,4 +18,33 @@ if _KEY not in sys.modules:
     sys.modules[_KEY] = mod
     spec.loader.exec_module(mod)
 
-TOOL_CLASS = sys.modules[_KEY].LineTool
+
+_Base = sys.modules[_KEY].LineTool
+
+
+class LineTool(  # type: ignore[misc]
+    _Base,
+):
+    name = 'Line'
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t)
+            l.setStyleSheet("font-size:11px;")
+            return l
+        row.addWidget(lbl('Size'))
+        s = SliderField(1, 200, max(1, int(ctx.brush_size)), slider_width=120)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(s)
+        row.addStretch()
+        return host
+
+
+TOOL_CLASS = LineTool
+

@@ -1,7 +1,7 @@
 # Custom Brushes & Tools
 
 Drop any folder here to add a new tool to the tool panel automatically.
-No registration, no config — just drop the folder in and relaunch.
+No registration, no config ï¿½ just drop the folder in and relaunch.
 
 ---
 
@@ -11,7 +11,7 @@ No registration, no config — just drop the folder in and relaunch.
 Plugins/Brushes/
     <Category>/              <- becomes a split-button group in the Tools dock
         <ToolName>/
-            tool.py          <- only required file — must define TOOL_CLASS
+            tool.py          <- only required file ï¿½ must define TOOL_CLASS
 ```
 
 ---
@@ -28,6 +28,7 @@ from app.layer import Layer
 
 class MyTool(Tool):
     name      = "My Tool"   # label shown in the tool panel
+    icon      = "ðŸ”§"         # optional glyph rendered before the name
     commit_on = "release"   # when history is saved: "press" | "release" | None
 
     def press(self, layer: Layer, x: int, y: int) -> None:
@@ -37,7 +38,7 @@ class MyTool(Tool):
         pass   # called while dragging
 
     def release(self, layer: Layer, x: int, y: int) -> None:
-        super().release(layer, x, y)   # always call super — triggers history
+        super().release(layer, x, y)   # always call super ï¿½ triggers history
 
 
 TOOL_CLASS = MyTool
@@ -49,7 +50,7 @@ TOOL_CLASS = MyTool
 
 Subclass `_ShapeTool` and implement only `_draw()`.
 You get a draggable bounding box, eight resize handles, move-inside-to-pan,
-Shift-lock proportions, and history — all for free.
+Shift-lock proportions, and history ï¿½ all for free.
 
 ```python
 # Plugins/Brushes/Shapes/MyShape/tool.py
@@ -93,7 +94,7 @@ Override `build_ui(parent, ctx)` to return a `QWidget`.
 It is mounted in the tool-settings toolbar whenever your tool is active
 and destroyed when another tool is selected.
 
-Use `SliderField` for numeric values — it is a slider and spinbox kept in
+Use `SliderField` for numeric values ï¿½ it is a slider and spinbox kept in
 sync, and it fires `valueChanged(int)` on every change.
 
 ```python
@@ -200,6 +201,54 @@ def build_ui(self, parent, ctx):
     btn.setMenu(menu)
     return btn
 ```
+
+---
+
+## Tool icons
+
+Every tool button shows an icon glyph before its name so users can scan
+the panel by shape, not by reading. Two ways to give a tool an icon:
+
+**1. Class attribute (recommended for code-based tools)**
+
+```python
+class MyBrush(Tool):
+    name = "My Brush"
+    icon = "âœ¨"   # any unicode glyph or emoji
+```
+
+**2. `tool.json` manifest (recommended for non-code drop-ins)**
+
+Place a `tool.json` next to your `tool.py`:
+
+```json
+{
+    "name":     "My Brush",
+    "icon":     "âœ¨",
+    "category": "Custom Brushes"
+}
+```
+
+The manifest icon overrides the class attribute, so a user can re-skin
+a shipped tool by editing its `tool.json` without touching Python.
+If neither is set, the built-in `TOOL_ICONS` table in
+`app/ui/tool_panel.py` is checked, then the button falls back to
+text-only.
+
+---
+
+## Keyboard shortcuts
+
+The built-in tools register Photoshop-style single-key shortcuts
+(B Brush, E Eraser, G Fill, V Move, M Marquee, L Lasso, W Magic Wand,
+T Text, I Picker, U Line, Shift+U Rectangle, Alt+U Ellipse, R Blur,
+Shift+R Sharpen, Alt+R Smudge, S Clone Stamp, Ctrl+T Transform,
+Ctrl+Shift+T Sel Transform). Hovering a tool button shows the active
+shortcut in the tooltip.
+
+Shortcuts are defined in `TOOL_SHORTCUTS` at the top of
+`app/ui/tool_panel.py`. Custom tools are not auto-bound â€” if you want
+one, add an entry there keyed by your `name`.
 
 ---
 

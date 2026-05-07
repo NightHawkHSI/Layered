@@ -19,6 +19,40 @@ class SprayBrushTool(Tool):
     """Airbrush / spray-paint: scatters random pixels inside the brush radius.
     Density scales with opacity; radius scales with brush size."""
     name = "Spray"
+    icon = "💨"
+
+    def __init__(self, ctx=None):
+        super().__init__(ctx)
+        self.density    = 5    # dots per stamp
+        self.spread_pct = 100  # scatter radius as % of brush radius
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t); l.setStyleSheet("font-size:11px;"); return l
+        row.addWidget(lbl('Size'))
+        _s = SliderField(1, 500, max(1, int(ctx.brush_size)), slider_width=100)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Opacity'))
+        _s = SliderField(1, 100, max(1, int(ctx.brush_opacity)), slider_width=100)
+        _s.valueChanged.connect(lambda v: setattr(ctx, 'brush_opacity', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Density'))
+        _s = SliderField(1, 20, int(self.density), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'density', int(v)))
+        row.addWidget(_s)
+        row.addWidget(lbl('Spread %'))
+        _s = SliderField(10, 300, int(self.spread_pct), slider_width=90)
+        _s.valueChanged.connect(lambda v: setattr(self, 'spread_pct', int(v)))
+        row.addWidget(_s)
+        row.addStretch()
+        return host
 
     def press(self, layer: Layer, x: int, y: int) -> None:
         self._last_pt = (x, y)
@@ -34,8 +68,8 @@ class SprayBrushTool(Tool):
         self._last_pt = (x, y)
 
     def _spray(self, layer: Layer, x: int, y: int) -> None:
-        r       = max(1, self.ctx.brush_size // 2)
-        density = max(1, int(r * self.ctx.brush_opacity * 8))
+        r       = max(1, int(self.ctx.brush_size * self.spread_pct / 100) // 2)
+        density = max(1, self.density)
         ox, oy  = layer.offset
         d       = ImageDraw.Draw(layer.image)
         for _ in range(density):

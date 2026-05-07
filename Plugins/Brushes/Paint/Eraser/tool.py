@@ -18,4 +18,45 @@ if _KEY not in sys.modules:
     sys.modules[_KEY] = mod
     spec.loader.exec_module(mod)
 
-TOOL_CLASS = sys.modules[_KEY].EraserTool
+
+_Base = sys.modules[_KEY].EraserTool
+
+
+class EraserTool(  # type: ignore[misc]
+    _Base,
+):
+    name = 'Eraser'
+
+    def build_ui(self, parent, ctx):
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from app.ui.slider_field import SliderField
+        host = QWidget(parent)
+        row  = QHBoxLayout(host)
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(10)
+        def lbl(t):
+            l = QLabel(t)
+            l.setStyleSheet("font-size:11px;")
+            return l
+        row.addWidget(lbl('Size'))
+        s = SliderField(1, 500, max(1, int(ctx.brush_size)), slider_width=100)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'brush_size', int(v)))
+        row.addWidget(s)
+        row.addWidget(lbl('Hardness'))
+        s = SliderField(0, 100, max(0, int(ctx.brush_hardness * 100)), slider_width=90)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'brush_hardness', v / 100.0))
+        row.addWidget(s)
+        row.addWidget(lbl('Opacity'))
+        s = SliderField(0, 100, max(0, int(ctx.brush_opacity * 100)), slider_width=90)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'brush_opacity', v / 100.0))
+        row.addWidget(s)
+        row.addWidget(lbl('Spacing'))
+        s = SliderField(0, 100, max(0, int(ctx.brush_spacing * 100)), slider_width=90)
+        s.valueChanged.connect(lambda v: setattr(ctx, 'brush_spacing', v / 100.0))
+        row.addWidget(s)
+        row.addStretch()
+        return host
+
+
+TOOL_CLASS = EraserTool
+

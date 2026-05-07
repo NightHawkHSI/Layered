@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-05-07 — Tool Panel Flow Control & Per-Tool Icons
+
+### Added
+1. **Tool buttons now show an icon glyph + tooltip + keyboard shortcut.**
+   `app/ui/tool_panel.py` gained a `TOOL_ICONS` map and a Photoshop-ish
+   `TOOL_SHORTCUTS` map (B Brush, E Eraser, G Fill, V Move, M Marquee,
+   L Lasso, W Magic Wand, T Text, I Picker, U Line, Shift+U Rectangle,
+   Alt+U Ellipse, R Blur, Shift+R Sharpen, Alt+R Smudge, S Clone Stamp,
+   Ctrl+T Transform, Ctrl+Shift+T Sel Transform). Each button is bigger
+   (min height 30px), left-aligned, gets a hover hint, and the active
+   tool is now highlighted via stylesheet (`#2a6ad6` background, bold
+   white text, blue border) so the eye can pick it out at a glance.
+   Shortcuts use `ApplicationShortcut` scope but skip activation while
+   a `QLineEdit`, `QTextEdit`, `QPlainTextEdit`, `QAbstractSpinBox`, or
+   editable `QComboBox` is focused so typing in the Text dock / spin
+   boxes is not hijacked.
+
+2. **`Tool.icon` class attribute + `tool.json` `"icon"` field.**
+   `app/tools.py` adds `icon: str = ""` on the `Tool` base class.
+   `app/tool_loader.py` reads `meta.get("icon")` from each `tool.json`
+   and writes it onto the instantiated tool (manifest icon overrides
+   class attr). `ToolPanel.set_tool_icon(name, icon)` is called from
+   `main_window._deferred_plugin_init` and the hot-reload path before
+   `add_tool_button` / `set_tool_categories`, so custom brushes can
+   ship their own glyph instead of inheriting `TOOL_ICONS`. Both the
+   primary split-button label and the dropdown menu actions render
+   with the icon prefix; `_on_category_pick` keeps the label and
+   tooltip in sync when the user picks a sub-tool.
+
+3. **All built-in custom brushes declare an `icon`.**
+   Spray 💨, Square Brush ▣, Scatter ✣, Fur 🦔, Splatter 💦, Weave ▦,
+   Lightning ⚡, Kaleidoscope ❋, Constellation ✦.
+
+### Changed
+4. **`HOW_TO_ADD_TOOLS.md`** — documents the new `icon` attribute and
+   `tool.json` `"icon"` manifest field, plus the keyboard-shortcut /
+   tooltip behaviour for built-in tools.
+
 ## 2026-05-06 — Custom Tool Categories, Selection Undo & Rotation Fix
 
 ### Added

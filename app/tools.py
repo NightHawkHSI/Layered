@@ -166,6 +166,7 @@ class Tool:
     name: str = "Tool"
     group: str = ""           # set by tool_loader from the parent folder name
     role: str = ""            # semantic role; see above
+    icon: str = ""            # optional glyph shown on the tool button
     is_default: bool = False
     commit_on: Optional[str] = "release"   # "press" | "release" | None
 

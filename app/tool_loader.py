@@ -12,7 +12,8 @@ Manifest schema (all keys optional except `name`):
     {
         "name":     "Brush",       # display name (key in tools dict)
         "class":    "BrushTool",      # class name in app.tools (used when no tool.py)
-        "category": "Basic"           # override the parent folder name (optional)
+        "category": "Basic",          # override the parent folder name (optional)
+        "icon":     "🖌"              # optional glyph shown on the tool button
     }
 
 When `tool.py` is present alongside `tool.json` the loader imports it
@@ -79,6 +80,13 @@ def load_tools(brushes_dir: Path, ctx) -> Tuple[dict[str, Any], dict[str, list[s
                 inst.group = effective_cat
             except Exception:
                 pass
+            # Manifest icon overrides class attr; either is optional.
+            icon = meta.get("icon")
+            if icon:
+                try:
+                    inst.icon = icon
+                except Exception:
+                    pass
             tools_out[display_name] = inst
             cats_out.setdefault(effective_cat, []).append(display_name)
     return tools_out, cats_out
