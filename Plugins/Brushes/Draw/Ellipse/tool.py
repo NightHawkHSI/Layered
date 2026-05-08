@@ -1,37 +1,37 @@
-"""Bridge wrapper: load EllipseTool from Plugins/_builtin_tools.py.
+import importlib.util as _iu, sys as _sys
+from pathlib import Path as _P
+_SHARED_KEY = "_layered_brushes_shared"
+if _SHARED_KEY not in _sys.modules:
+    _src = _P(__file__).resolve().parents[2] / "_shared.py"
+    _spec = _iu.spec_from_file_location(_SHARED_KEY, _src)
+    _mod = _iu.module_from_spec(_spec)
+    _sys.modules[_SHARED_KEY] = _mod
+    _spec.loader.exec_module(_mod)
+_sh = _sys.modules[_SHARED_KEY]
 
-Each Plugins/Brushes/<Group>/<Tool>/tool.py file is a thin wrapper that
-exposes TOOL_CLASS so app.tool_loader can register the tool. The actual
-implementation still lives in the legacy _builtin_tools.py module; once
-every tool has been ported into its own folder this wrapper can be
-replaced with a direct class definition.
-"""
-import importlib.util
-import sys
-from pathlib import Path
-
-_KEY = "_layered_builtin_tools"
-if _KEY not in sys.modules:
-    src = Path(__file__).resolve().parents[3] / "_builtin_tools.py"
-    spec = importlib.util.spec_from_file_location(_KEY, src)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[_KEY] = mod
-    spec.loader.exec_module(mod)
+Layer = _sh.Layer
+ImageDraw = _sh.ImageDraw
+_ShapeTool = _sh._ShapeTool
 
 
-_Base = sys.modules[_KEY].EllipseTool
+class EllipseTool(_ShapeTool):
+    name = "Ellipse"
 
-
-class EllipseTool(  # type: ignore[misc]
-    _Base,
-):
-    name = 'Ellipse'
+    def _draw(self, layer: Layer, bbox: tuple[int, int, int, int]) -> None:
+        x0, y0, x1, y1 = bbox
+        d = ImageDraw.Draw(layer.image)
+        if self.ctx.fill_shape:
+            d.ellipse([x0, y0, x1, y1], fill=self.ctx.primary_color,
+                      outline=self.ctx.primary_color, width=self.ctx.brush_size)
+        else:
+            d.ellipse([x0, y0, x1, y1], outline=self.ctx.primary_color,
+                      width=self.ctx.brush_size)
 
     def build_ui(self, parent, ctx):
         from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
         from app.ui.slider_field import SliderField
         host = QWidget(parent)
-        row  = QHBoxLayout(host)
+        row = QHBoxLayout(host)
         row.setContentsMargins(4, 0, 4, 0)
         row.setSpacing(10)
         def lbl(t):
@@ -47,4 +47,3 @@ class EllipseTool(  # type: ignore[misc]
 
 
 TOOL_CLASS = EllipseTool
-

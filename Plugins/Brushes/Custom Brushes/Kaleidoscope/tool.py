@@ -1,165 +1,238 @@
-﻿import importlib.util, math, sys
+﻿import importlib.util
+import math
+import sys
+import random
+import colorsys
+
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
+
 from app.layer import Layer
 from app.tools import Tool
 
-_K = "_layered_builtin_tools"
+# —————————————————————————————————————————————————————————————————————————————
+# load shared builtins
+# —————————————————————————————————————————————————————————————————————————————
+
+_K = "_layered_brushes_shared"
+
 if _K not in sys.modules:
-    _s = Path(__file__).resolve().parents[3] / "_builtin_tools.py"
+    _s = Path(__file__).resolve().parents[2] / "_shared.py"
     _p = importlib.util.spec_from_file_location(_K, _s)
     _m = importlib.util.module_from_spec(_p)
     sys.modules[_K] = _m
     _p.loader.exec_module(_m)
-_walk = sys.modules[_K]._walk
 
+_bt   = sys.modules[_K]
+_walk = _bt._walk
 
-def _rot(px, py, cx, cy, cos_a, sin_a):
-    dx, dy = px - cx, py - cy
-    return cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a
-
-
-def _refl(px, py, cx, cy, cos_a, sin_a):
-    """Reflect a point across an axis through (cx,cy) with direction (cos_a,sin_a)."""
-    dx, dy = px - cx, py - cy
-    dot = dx * cos_a + dy * sin_a
-    return cx + 2 * dot * cos_a - dx, cy + 2 * dot * sin_a - dy
-
+# —————————————————————————————————————————————————————————————————————————————
+# TOOL: Kaleidoscope / Mandala Brush
+# —————————————————————————————————————————————————————————————————————————————
 
 class KaleidoscopeBrushTool(Tool):
-    """Kaleidoscope / mandala brush.
-
-    Every stroke segment is replicated N times, rotated evenly around the
-    point where you first pressed.  Enabling Mirror also reflects each copy
-    across its own axis, doubling the symmetry and producing true mandala
-    patterns.  Use any other brush shape underneath — this tool replicates
-    whatever the base tool draws.
-
-    Settings
-    --------
-    Axes    – number of symmetry copies (2–24)
-    Mirror  – also reflect each copy (0=off, 1=on)
-    Size    – brush tip radius in px (1–40)
-    Opacity – per-segment opacity (driven by brush_opacity too)
-    """
 
     name = "Kaleidoscope"
     icon = "❋"
 
     def __init__(self, ctx=None):
         super().__init__(ctx)
-        self.axes    = 8
-        self.mirror  = 1
-        self.tip_size = 6
-
+        
+        # Symmetry
+        self.axes        = 8
+        self.mirror      = 1
+        
+        # Line Properties
+        self.line_width  = 4
+        self.softness    = 0.5
+        self.glow_radius = 0
+        
+        # Dynamic Effects
+        self.hue_shift   = 0     # Cycles color during stroke
+        
+        # Internals
         self._center: tuple[float, float] = (0.0, 0.0)
         self._last_pt: tuple[float, float] | None = None
+        self._hue_offset: float = 0.0
+
+    # —————————————————————————————————————————————————————————————————————————
+    # UI (Grid Layout Popup)
+    # —————————————————————————————————————————————————————————————————————————
 
     def build_ui(self, parent, ctx):
-        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from PyQt6.QtWidgets import (
+            QGridLayout, QLabel, QMenu, QToolButton, QWidget, QWidgetAction
+        )
         from app.ui.slider_field import SliderField
 
-        host = QWidget(parent)
-        row  = QHBoxLayout(host)
-        row.setContentsMargins(4, 0, 4, 0)
-        row.setSpacing(10)
+        btn = QToolButton(parent)
+        btn.setText("Kaleidoscope Settings ▾")
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setFixedWidth(180)
+
+        menu = QMenu(btn)
+        panel = QWidget(menu)
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 10, 12, 10)
+        grid.setSpacing(6)
+
+        SLIDERS = [
+            # attr, label, lo, hi, is_float
+            ("axes",        "Symmetry Axes", 2,   36, False),
+            ("mirror",      "Mirror (0/1)",  0,    1, False),
+            ("line_width",  "Line Width",    1,   50, False),
+            ("glow_radius", "Glow Power",    0,   20, False),
+            ("softness",    "Edge Softness", 0,   50, True),
+            ("hue_shift",   "Rainbow Flow",  0,  100, False),
+        ]
 
         def lbl(t):
             l = QLabel(t)
-            l.setStyleSheet("font-size:11px;")
+            l.setStyleSheet("font-size: 11px; color: #ccc;")
             return l
 
-        for attr, label, lo, hi, w in [
-            ("axes",     "Axes",    2, 24, 75),
-            ("mirror",   "Mirror",  0,  1, 55),
-            ("tip_size", "Size",    1, 40, 75),
-        ]:
-            row.addWidget(lbl(label))
-            s = SliderField(lo, hi, getattr(self, attr), slider_width=w)
-            s.valueChanged.connect(lambda v, a=attr: setattr(self, a, int(v)))
-            row.addWidget(s)
+        grid.addWidget(lbl("Brush Opacity"), 0, 0)
+        s_opac = SliderField(1, 100, max(1, int(ctx.brush_opacity * 100)), slider_width=110)
+        s_opac.valueChanged.connect(lambda v: setattr(ctx, "brush_opacity", v / 100.0))
+        grid.addWidget(s_opac, 0, 1)
 
-        row.addStretch()
-        return host
+        for i, (attr, label, lo, hi, is_float) in enumerate(SLIDERS):
+            grid.addWidget(lbl(label), i + 1, 0)
+            val = getattr(self, attr)
+            if is_float: val = int(val * 10)
+            s = SliderField(lo, hi, val, slider_width=110)
+            def make_h(a, f):
+                return lambda v: setattr(self, a, v / 10.0 if f else int(v))
+            s.valueChanged.connect(make_h(attr, is_float))
+            grid.addWidget(s, i + 1, 1)
+
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(panel)
+        menu.addAction(wa)
+        btn.setMenu(menu)
+        return btn
+
+    # —————————————————————————————————————————————————————————————————————————
+    # Symmetry Math
+    # —————————————————————————————————————————————————————————————————————————
+
+    def _get_symmetric_points(self, x: float, y: float):
+        """Returns a list of all symmetric coordinates for a given point."""
+        cx, cy = self._center
+        pts = []
+        
+        for i in range(self.axes):
+            angle = (2 * math.pi * i) / self.axes
+            cos_a = math.cos(angle)
+            sin_a = math.sin(angle)
+            
+            # Rotate
+            dx, dy = x - cx, y - cy
+            rx = cx + dx * cos_a - dy * sin_a
+            ry = cy + dx * sin_a + dy * cos_a
+            pts.append((rx, ry))
+            
+            if self.mirror:
+                # Reflect across the bisector of the wedge
+                mid_angle = angle + math.pi / self.axes
+                ma = mid_angle
+                # Axis vector
+                ax_x, ax_y = math.cos(ma), math.sin(ma)
+                # Reflection
+                dot = (rx - cx) * ax_x + (ry - cy) * ax_y
+                mx = cx + 2 * dot * ax_x - (rx - cx)
+                my = cy + 2 * dot * ax_y - (ry - cy)
+                pts.append((mx, my))
+                
+        return pts
+
+    # —————————————————————————————————————————————————————————————————————————
+    # Stroke Logic
+    # —————————————————————————————————————————————————————————————————————————
 
     def _spacing(self):
-        return max(1.0, self.tip_size * 0.4)
+        return max(1.5, self.line_width * 0.2)
 
     def press(self, layer: Layer, x: int, y: int) -> None:
         ox, oy = layer.offset
-        self._center  = (x - ox, y - oy)   # fixed symmetry hub in layer coords
+        self._center = (x - ox, y - oy)
         self._last_pt = (x - ox, y - oy)
-        self._dot(layer, x - ox, y - oy)
+        self._hue_offset = 0.0
+        self._stamp_segment(layer, self._last_pt, self._last_pt)
 
     def move(self, layer: Layer, x: int, y: int) -> None:
-        if self._last_pt is None:
-            return
+        if self._last_pt is None: return
         ox, oy = layer.offset
-        cur = (x - ox, y - oy)
+        cur_pt = (x - ox, y - oy)
+        
+        # Standard walk for smooth lines
         spacing = self._spacing()
-        # walk in canvas coords then convert
         for px, py in _walk(
             (self._last_pt[0] + ox, self._last_pt[1] + oy),
-            (cur[0] + ox, cur[1] + oy),
-            spacing,
+            (x, y),
+            spacing
         ):
-            self._segment(layer, self._last_pt, (px - ox, py - oy))
-            self._last_pt = (px - ox, py - oy)
-        self._last_pt = cur
+            lx, ly = px - ox, py - oy
+            self._stamp_segment(layer, self._last_pt, (lx, ly))
+            self._last_pt = (lx, ly)
+            
+            # Progress hue
+            if self.hue_shift > 0:
+                self._hue_offset = (self._hue_offset + self.hue_shift / 500.0) % 1.0
 
-    def release(self, layer: Layer, x: int, y: int) -> None:
-        super().release(layer, x, y)
+    # —————————————————————————————————————————————————————————————————————————
+    # Rendering
+    # —————————————————————————————————————————————————————————————————————————
 
-    # ── drawing ───────────────────────────────────────────────────────────────
-    def _draw_line_all(self, draw, x0, y0, x1, y1, color, width):
-        """Draw a segment and all its symmetry copies."""
-        cx, cy = self._center
-        for i in range(self.axes):
-            angle   = 2 * math.pi * i / self.axes
-            cos_a   = math.cos(angle)
-            sin_a   = math.sin(angle)
-            rx0, ry0 = _rot(x0, y0, cx, cy, cos_a, sin_a)
-            rx1, ry1 = _rot(x1, y1, cx, cy, cos_a, sin_a)
-            draw.line([(round(rx0), round(ry0)), (round(rx1), round(ry1))],
-                      fill=color, width=width)
-            if self.mirror:
-                # axis direction for this slice
-                mid_angle = angle + math.pi / self.axes
-                ac, as_   = math.cos(mid_angle), math.sin(mid_angle)
-                mx0, my0  = _refl(rx0, ry0, cx, cy, ac, as_)
-                mx1, my1  = _refl(rx1, ry1, cx, cy, ac, as_)
-                draw.line([(round(mx0), round(my0)), (round(mx1), round(my1))],
-                          fill=color, width=width)
-
-    def _segment(self, layer: Layer, p0, p1) -> None:
-        alpha   = int(255 * max(0.0, min(1.0, self.ctx.brush_opacity)))
+    def _stamp_segment(self, layer: Layer, p0: tuple[float, float], p1: tuple[float, float]) -> None:
+        W, H = layer.image.width, layer.image.height
+        alpha = int(255 * self.ctx.brush_opacity)
+        
+        # Calculate color with Hue Shift
         r, g, b = self.ctx.primary_color[:3]
-        draw    = ImageDraw.Draw(layer.image)
-        width   = max(1, self.tip_size)
-        self._draw_line_all(draw, p0[0], p0[1], p1[0], p1[1],
-                            (r, g, b, alpha), width)
+        if self.hue_shift > 0:
+            h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+            r, g, b = [int(c * 255) for c in colorsys.hsv_to_rgb((h + self._hue_offset) % 1.0, s, v)]
 
-    def _dot(self, layer: Layer, lx: float, ly: float) -> None:
-        alpha   = int(255 * max(0.0, min(1.0, self.ctx.brush_opacity)))
-        r, g, b = self.ctx.primary_color[:3]
-        draw    = ImageDraw.Draw(layer.image)
-        tr      = max(1, self.tip_size // 2)
-        cx, cy  = self._center
-        for i in range(self.axes):
-            angle  = 2 * math.pi * i / self.axes
-            cos_a  = math.cos(angle)
-            sin_a  = math.sin(angle)
-            rx, ry = _rot(lx, ly, cx, cy, cos_a, sin_a)
-            draw.ellipse([round(rx - tr), round(ry - tr),
-                          round(rx + tr), round(ry + tr)],
-                         fill=(r, g, b, alpha))
-            if self.mirror:
-                mid_angle = angle + math.pi / self.axes
-                ac, as_   = math.cos(mid_angle), math.sin(mid_angle)
-                mx, my    = _refl(rx, ry, cx, cy, ac, as_)
-                draw.ellipse([round(mx - tr), round(my - tr),
-                              round(mx + tr), round(my + tr)],
-                             fill=(r, g, b, alpha))
+        # Get all symmetric lines
+        points0 = self._get_symmetric_points(*p0)
+        points1 = self._get_symmetric_points(*p1)
+        
+        # Bounding box for cluster
+        all_x = [p[0] for p in points0 + points1]
+        all_y = [p[1] for p in points0 + points1]
+        
+        pad = self.line_width + self.glow_radius + 5
+        bx0, by0 = max(0, min(all_x) - pad), max(0, min(all_y) - pad)
+        bx1, by1 = min(W, max(all_x) + pad), min(H, max(all_y) + pad)
+        
+        bw, bh = int(bx1 - bx0), int(by1 - by0)
+        if bw <= 0 or bh <= 0: return
 
+        # Scratch drawing
+        scratch = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(scratch)
+        
+        for i in range(len(points0)):
+            lp0 = (points0[i][0] - bx0, points0[i][1] - by0)
+            lp1 = (points1[i][0] - bx0, points1[i][1] - by0)
+            
+            # Draw glow line if applicable
+            if self.glow_radius > 0:
+                draw.line([lp0, lp1], fill=(r, g, b, alpha // 3), width=self.line_width + self.glow_radius)
+            
+            # Draw core line
+            draw.line([lp0, lp1], fill=(r, g, b, alpha), width=self.line_width)
+
+        # Apply softness/blur
+        total_blur = self.softness
+        if self.glow_radius > 0:
+            total_blur += (self.glow_radius / 4.0)
+            
+        if total_blur > 0.1:
+            scratch = scratch.filter(ImageFilter.GaussianBlur(total_blur))
+
+        # Composite
+        layer.image.alpha_composite(scratch, dest=(int(bx0), int(by0)))
 
 TOOL_CLASS = KaleidoscopeBrushTool

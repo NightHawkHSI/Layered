@@ -49,6 +49,7 @@ from .project import Project
 from .project_io import PROJECT_EXT, PROJECT_FILTER, load_project, save_project
 from .preferences import Preferences
 from .session import load_session, save_session
+from .brush_loader import load_brush_presets
 from .tool_loader import load_tools as load_brush_tools
 from .tools import ToolContext
 from .ui.color_panel import ColorPanel
@@ -216,6 +217,7 @@ class MainWindow(QMainWindow):
         # plugin (and any other tool plugins) register in _deferred_plugin_init.
         self.tool_panel = ToolPanel(self.tool_ctx, {}, layout="tools_dock")
         self.tool_panel.tool_selected.connect(self._on_tool_selected)
+        self.tool_panel.tool_order_changed.connect(self._save_tool_order)
         self._add_dock("Tools", self.tool_panel, Qt.DockWidgetArea.LeftDockWidgetArea)
 
         self._tool_settings_bar = QToolBar("Tool settings", self)
@@ -334,7 +336,15 @@ class MainWindow(QMainWindow):
         if brush_cats:
             self.tool_panel.set_tool_categories(brush_cats)
 
+        try:
+            presets = load_brush_presets(BRUSHES_DIR)
+            if presets:
+                self.set_brush_presets(presets)
+        except Exception as exc:
+            self.log.warning("brush_loader failed: %s", exc)
+
         self._post_plugin_tools_loaded()
+        self._apply_saved_tool_order()
         self._plugin_snapshot = snapshot_plugin_files(PLUGINS_DIR)
         self._plugin_watch_timer.start()
         # Rebuild menus so plugin filters/actions/tools and the Brushes
@@ -395,6 +405,17 @@ class MainWindow(QMainWindow):
     def _save_layout(self) -> None:
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
+
+    def _save_tool_order(self, order: list) -> None:
+        self._settings.setValue("tools/order", list(order))
+
+    def _apply_saved_tool_order(self) -> None:
+        saved = self._settings.value("tools/order")
+        if not saved:
+            return
+        if isinstance(saved, str):
+            saved = [saved]
+        self.tool_panel.set_tool_order(list(saved))
 
     def _reset_layout(self) -> None:
         self.restoreGeometry(self._default_geometry)
@@ -1192,12 +1213,9 @@ class MainWindow(QMainWindow):
     def _on_images_dropped(self, paths: list[Path]) -> None:
         if not paths:
             return
-        dlg = DropActionDialog(len(paths), self)
-        if dlg.exec() != dlg.DialogCode.Accepted:
-            return
-        action = dlg.selected()
-        opts = dlg.options()
-        if action == DropActionDialog.NEW_PROJECT:
+        multi = len(paths) > 1
+
+        def do_new_project():
             for p in paths:
                 try:
                     self.projects.append(Project.from_image(p))
@@ -1206,11 +1224,27 @@ class MainWindow(QMainWindow):
             self.active_project = len(self.projects) - 1
             self._bind_current()
             self._refresh_tabs()
-        elif action == DropActionDialog.ADD_LAYER:
+
+        def do_add_layer():
             for p in paths:
-                self._add_image_as_layer(p, center=opts["center"], scale_to_fit=opts["scale_to_fit"])
-        elif action == DropActionDialog.REPLACE:
-            self._replace_canvas_with(paths[0], center=opts["center"], scale_to_fit=opts["scale_to_fit"])
+                self._add_image_as_layer(p, center=True, scale_to_fit=True)
+
+        def do_replace():
+            self._replace_canvas_with(paths[0], center=True, scale_to_fit=True)
+
+        if multi:
+            labels = ["New Project", "Add Layer"]
+            actions = [do_new_project, do_add_layer]
+        else:
+            labels = ["New Project", "Add Layer", "Replace Canvas"]
+            actions = [do_new_project, do_add_layer, do_replace]
+
+        from PyQt6.QtGui import QCursor
+        from .ui.radial_menu import RadialMenu
+        menu = RadialMenu(labels, self)
+        menu.chosen.connect(lambda i: actions[i]())
+        menu.show_at(QCursor.pos())
+        self._radial_menu = menu
 
     def _on_quick_save(self) -> None:
         proj = self.current()

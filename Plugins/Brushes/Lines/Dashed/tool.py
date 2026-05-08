@@ -1,11 +1,11 @@
-import importlib.util, math, sys, random
+﻿import importlib.util, math, sys, random
 from pathlib import Path
 from PIL import Image, ImageDraw
 from app.layer import Layer
 from app.tools import Tool
-_K = "_layered_builtin_tools"
+_K = "_layered_brushes_shared"
 if _K not in sys.modules:
-    _s = Path(__file__).resolve().parents[3] / "_builtin_tools.py"
+    _s = Path(__file__).resolve().parents[2] / "_shared.py"
     _p = importlib.util.spec_from_file_location(_K, _s)
     _m = importlib.util.module_from_spec(_p)
     sys.modules[_K] = _m

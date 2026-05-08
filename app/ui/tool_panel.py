@@ -145,6 +145,7 @@ TOOL_SETTINGS: dict[str, list[str]] = {
 class ToolPanel(QWidget):
     tool_selected = pyqtSignal(str)
     brush_size_changed = pyqtSignal(int)
+    tool_order_changed = pyqtSignal(list)
 
     def __init__(self, ctx: ToolContext, tools: dict[str, Tool], parent: Optional[QWidget] = None,
                  layout: str = "panel"):
@@ -324,6 +325,16 @@ class ToolPanel(QWidget):
         so swapping tools doesn't reflow the toolbar — unused settings are
         kept visible but disabled, signalling they exist for other tools."""
         self._active_tool_name = name
+        btn = self._buttons.get(name)
+        if btn is None:
+            for b in self._buttons.values():
+                if b.property("tool_name") == name:
+                    btn = b
+                    break
+        if btn is not None and not btn.isChecked():
+            btn.blockSignals(True)
+            btn.setChecked(True)
+            btn.blockSignals(False)
         if not self._setting_actions:
             return
         wanted = set(TOOL_SETTINGS.get(name, []))
@@ -469,6 +480,76 @@ class ToolPanel(QWidget):
         self._add_button(name)
         if toolbar is not None and self._layout_mode == "toolbar":
             toolbar.addWidget(self._buttons[name])
+
+    # --- reorder support ---------------------------------------------------
+
+    def get_tool_order(self) -> list[str]:
+        return list(self._buttons.keys())
+
+    def set_tool_order(self, order: list[str]) -> None:
+        """Reflow buttons in `order`. Names not in `order` keep relative order
+        and are appended at the end. No-op if no buttons exist yet."""
+        if not self._buttons:
+            return
+        new_buttons: dict = {}
+        for n in order:
+            if n in self._buttons:
+                new_buttons[n] = self._buttons[n]
+        for n, b in self._buttons.items():
+            if n not in new_buttons:
+                new_buttons[n] = b
+        self._buttons = new_buttons
+        if self._layout_mode in ("tools_dock", "panel"):
+            grid = getattr(self, "_grid", None)
+            if grid is None:
+                return
+            for btn in self._buttons.values():
+                grid.removeWidget(btn)
+            for i, btn in enumerate(self._buttons.values()):
+                grid.addWidget(btn, i // 2, i % 2)
+
+    def open_reorder_dialog(self) -> None:
+        from PyQt6.QtWidgets import (
+            QAbstractItemView,
+            QDialog,
+            QDialogButtonBox,
+            QListWidget,
+            QListWidgetItem,
+            QVBoxLayout,
+        )
+        if not self._buttons:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Customize tool order")
+        dlg.resize(280, 380)
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget(dlg)
+        lst.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        lst.setDefaultDropAction(Qt.DropAction.MoveAction)
+        lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        for n in self._buttons.keys():
+            item = QListWidgetItem(self._label_for(n))
+            item.setData(Qt.ItemDataRole.UserRole, n)
+            lst.addItem(item)
+        lay.addWidget(lst)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            order = [
+                lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
+            ]
+            self.set_tool_order(order)
+            self.tool_order_changed.emit(order)
+
+    def contextMenuEvent(self, e):  # noqa: N802
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("Customize tool order...", self.open_reorder_dialog)
+        m.exec(e.globalPos())
 
     def remove_tool_button(self, name: str) -> None:
         btn = self._buttons.pop(name, None)

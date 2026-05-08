@@ -1,6 +1,67 @@
 # Changelog
 
-## 2026-05-07 — Tool Panel Flow Control & Per-Tool Icons
+## 2026-05-08 — Plugin Authoring Template, Tool Reorder & Preferences Dialog
+
+### Added
+1. **`Create_tool_or_Brush.py` — standalone tool/brush authoring reference.**
+   New top-level cheat-sheet (700 lines) that documents every hook, helper,
+   and convention available when writing a `Plugins/Brushes/<Group>/<Tool>/
+   tool.py`. Covers the `Tool` base class (`name`, `group`, `role`, `icon`,
+   `is_default`, `commit_on`, lifecycle hooks, pointer-event APIs,
+   `build_ui`, `paint_overlay`, `commit`), the `ToolContext` surface
+   (colours, modifier keys, `active_layer`, selection hooks, history hooks,
+   hook registry, legacy compat shims), the `Plugins/Brushes/_shared.py`
+   helpers (`_brush_mask`, `_stamp_color`, `_stamp_erase`, `_walk`,
+   `_local_filter_stamp`, `_selection_at_layer`,
+   `_clip_layer_to_selection`, `_ShapeTool`, `_SelectionToolBase`,
+   `_shape_geom`, lazy Qt enum getters), the `tool.json` manifest, and the
+   keyboard-shortcut registry. Includes ten runnable example classes —
+   round soft brush, eraser, flood fill, filter brush, shape (`_ShapeTool`),
+   marquee (`_SelectionToolBase`), popup-settings tool, multi-press sticker
+   with hand-rolled `commit()`, picker with `on_pick` callback, and a
+   stateful tool using `on_select`/`on_deselect`. The file lives at the
+   project root (outside `Plugins/`) so the loader ignores it.
+
+2. **Drag-drop tool reorder in the Tools dock.**
+   `app/ui/tool_panel.py` adds a `tool_order_changed = pyqtSignal(list)`
+   signal, a `set_tool_order(order)` method that reflows the grid (names
+   not in `order` keep relative position and are appended), and an
+   `open_reorder_dialog()` that pops a `QListWidget` in
+   `InternalMove` drag-drop mode pre-filled with the current tool labels.
+   A right-click `contextMenuEvent` on the panel exposes the dialog via a
+   "Customize tool order..." action. The companion `remove_tool_button(name)`
+   helper detaches a button from the `QButtonGroup`, drops its shortcut, and
+   `deleteLater()`s both — used by hot-reload paths.
+
+3. **Shape and line tool icons registered in `TOOL_ICONS`.**
+   Triangle △, Star ★, Pentagon ⬠, Hexagon ⬡, Diamond ◇, Arrow ➤,
+   Curve ∿, Dashed ┈ now have built-in glyphs in
+   `app/ui/tool_panel.py:TOOL_ICONS`, matching the shape / line tools added
+   on 2026-05-06 so they no longer rely on per-tool `tool.json` icon
+   overrides.
+
+4. **Category-menu actions show their keyboard shortcut.**
+   `set_tool_categories` now calls `action.setShortcut(QKeySequence(sc))`
+   on each dropdown entry whose tool is in `TOOL_SHORTCUTS`, so the popup
+   menu of every split-button shows the Photoshop-style shortcut next to
+   the tool name (`app/ui/tool_panel.py`).
+
+### Changed
+5. **`app/ui/prefs_dialog.py` — Preferences dialog with live accent
+   preview and session restore.**
+   Adds a `_ColorSwatch` `QPushButton` that opens `QColorDialog`, plus a
+   live preview `QLabel` that re-tints itself and chooses white/black text
+   per the `0.299 R + 0.587 G + 0.114 B` luminance threshold. A "Reset"
+   button restores the default `#2196f3`. A "Restore open projects on
+   startup" checkbox binds to `Preferences.restore_session`. The dialog
+   uses a `QDialogButtonBox` with Ok / Cancel / Apply: Apply writes through
+   and `prefs.save()`s, Ok applies + accepts, Cancel calls `_apply_fn` with
+   the `_original_accent` captured at open so any live-preview tinting is
+   reverted.
+
+6. **`prefs.json` default schema.** Now stores `accent_color` (`"#2196f3"`)
+   and `restore_session` (`false`) — the two fields the new dialog edits.
+
 
 ### Added
 1. **Tool buttons now show an icon glyph + tooltip + keyboard shortcut.**

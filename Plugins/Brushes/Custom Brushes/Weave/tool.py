@@ -1,179 +1,227 @@
-﻿import importlib.util, math, sys
+﻿import importlib.util
+import math
+import sys
+import random
+import colorsys
+
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
+
 from app.layer import Layer
 from app.tools import Tool
 
-_K = "_layered_builtin_tools"
+# —————————————————————————————————————————————————————————————————————————————
+# load shared builtins
+# —————————————————————————————————————————————————————————————————————————————
+
+_K = "_layered_brushes_shared"
+
 if _K not in sys.modules:
-    _s = Path(__file__).resolve().parents[3] / "_builtin_tools.py"
+    _s = Path(__file__).resolve().parents[2] / "_shared.py"
     _p = importlib.util.spec_from_file_location(_K, _s)
     _m = importlib.util.module_from_spec(_p)
     sys.modules[_K] = _m
     _p.loader.exec_module(_m)
-_walk = sys.modules[_K]._walk
 
+_bt   = sys.modules[_K]
+_walk = _bt._walk
+
+# —————————————————————————————————————————————————————————————————————————————
+# TOOL: Advanced Weave Brush
+# —————————————————————————————————————————————————————————————————————————————
 
 class WeaveBrushTool(Tool):
-    """Weave / basket-weave brush.
-
-    Stamps a tile of interlocking horizontal and vertical thread segments.
-    Alternating rows/columns are offset by half a cell so every crossing
-    looks like one thread passing over and one passing under, producing a
-    woven-fabric appearance.
-
-    Settings
-    --------
-    Cell     – size of one weave cell in px (4–40)
-    Thread   – thickness of each thread (1–Cell/2)
-    Angle °  – rotate the whole weave tile (0–180)
-    Contrast – how dark the "under" threads appear (0–100)
-    """
 
     name = "Weave"
     icon = "▦"
 
     def __init__(self, ctx=None):
         super().__init__(ctx)
-        self.cell_size  = 10
-        self.thread_w   = 3
-        self.angle_deg  = 0
-        self.contrast   = 50
-        self._last_pt: tuple[int, int] | None = None
+        
+        # Pattern Controls
+        self.cell_size   = 12
+        self.thread_w    = 5
+        self.angle_deg   = 0
+        self.contrast    = 40
+        
+        # Realism
+        self.softness    = 0.5
+        self.color_shift = 15
+        self.highlight   = 30
+        
+        # Internals
+        self._last_pt = None
+
+    # —————————————————————————————————————————————————————————————————————————
+    # UI (Grid Layout Popup)
+    # —————————————————————————————————————————————————————————————————————————
 
     def build_ui(self, parent, ctx):
-        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+        from PyQt6.QtWidgets import (
+            QGridLayout, QLabel, QMenu, QToolButton, QWidget, QWidgetAction
+        )
         from app.ui.slider_field import SliderField
 
-        host = QWidget(parent)
-        row  = QHBoxLayout(host)
-        row.setContentsMargins(4, 0, 4, 0)
-        row.setSpacing(10)
+        btn = QToolButton(parent)
+        btn.setText("Weave Settings ▾")
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setFixedWidth(150)
+
+        menu = QMenu(btn)
+        panel = QWidget(menu)
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 10, 12, 10)
+        grid.setSpacing(6)
+
+        SLIDERS = [
+            # attr, label, lo, hi, is_float
+            ("cell_size",   "Cell Size",     4,   60, False),
+            ("thread_w",    "Thread Width",  1,   30, False),
+            ("angle_deg",   "Pattern °",     0,  180, False),
+            ("contrast",    "Depth/Gap",     0,  100, False),
+            ("highlight",   "3D Sheen",      0,  100, False),
+            ("color_shift", "Fiber Var",     0,  100, False),
+            ("softness",    "Edge Blur",     0,   50, True),
+        ]
 
         def lbl(t):
             l = QLabel(t)
-            l.setStyleSheet("font-size:11px;")
+            l.setStyleSheet("font-size: 11px; color: #ccc;")
             return l
 
-        for attr, label, lo, hi, w in [
-            ("cell_size", "Cell",     4, 40, 75),
-            ("thread_w",  "Thread",   1, 20, 75),
-            ("angle_deg", "Angle °",  0, 180, 80),
-            ("contrast",  "Contrast", 0, 100, 80),
-        ]:
-            row.addWidget(lbl(label))
-            s = SliderField(lo, hi, getattr(self, attr), slider_width=w)
-            s.valueChanged.connect(lambda v, a=attr: setattr(self, a, int(v)))
-            row.addWidget(s)
+        grid.addWidget(lbl("Brush Size"), 0, 0)
+        s_size = SliderField(1, 800, max(1, int(ctx.brush_size)), slider_width=110)
+        s_size.valueChanged.connect(lambda v: setattr(ctx, "brush_size", int(v)))
+        grid.addWidget(s_size, 0, 1)
 
-        row.addStretch()
-        return host
+        for i, (attr, label, lo, hi, is_float) in enumerate(SLIDERS):
+            grid.addWidget(lbl(label), i + 1, 0)
+            
+            val = getattr(self, attr)
+            if is_float: val = int(val * 10)
+            
+            s = SliderField(lo, hi, val, slider_width=110)
+            def make_h(a, f):
+                return lambda v: setattr(self, a, v / 10.0 if f else int(v))
+            
+            s.valueChanged.connect(make_h(attr, is_float))
+            grid.addWidget(s, i + 1, 1)
+
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(panel)
+        menu.addAction(wa)
+        btn.setMenu(menu)
+        return btn
+
+    # —————————————————————————————————————————————————————————————————————————
+    # Logic
+    # —————————————————————————————————————————————————————————————————————————
 
     def _spacing(self):
-        return max(1.0, self.ctx.brush_size * self.ctx.brush_spacing * 0.5)
+        return max(2.0, self.ctx.brush_size * self.ctx.brush_spacing * 0.4)
 
-    def press(self, layer: Layer, x: int, y: int) -> None:
+    def press(self, layer, x, y):
         self._last_pt = (x, y)
         self._stamp(layer, x, y)
 
-    def move(self, layer: Layer, x: int, y: int) -> None:
-        if self._last_pt is None:
-            self._last_pt = (x, y)
-            return
+    def move(self, layer, x, y):
+        if self._last_pt is None: return
         for px, py in _walk(self._last_pt, (x, y), self._spacing()):
             self._stamp(layer, px, py)
         self._last_pt = (x, y)
 
-    def release(self, layer: Layer, x: int, y: int) -> None:
-        super().release(layer, x, y)
-
     def _stamp(self, layer: Layer, cx: int, cy: int) -> None:
-        ox, oy  = layer.offset
-        alpha   = int(255 * max(0.0, min(1.0, self.ctx.brush_opacity)))
+        ox, oy = layer.offset
+        br = max(2, int(self.ctx.brush_size // 2))
+        alpha = int(255 * self.ctx.brush_opacity)
+        
+        # Determine bounds
+        pad = int(self.softness + 2)
+        bx0, by0 = cx - ox - br - pad, cy - oy - br - pad
+        bx1, by1 = cx - ox + br + pad, cy - oy + br + pad
+        
+        W, H = layer.image.width, layer.image.height
+        bx0, by0 = max(0, bx0), max(0, by0)
+        bx1, by1 = min(W, bx1), min(H, by1)
+        
+        bw, bh = int(bx1 - bx0), int(by1 - by0)
+        if bw <= 0 or bh <= 0: return
+
+        # Prep colors
         r, g, b = self.ctx.primary_color[:3]
-        W, H    = layer.image.width, layer.image.height
-        br      = max(2, self.ctx.brush_size // 2)
-        cell    = max(4, self.cell_size)
-        tw      = max(1, min(self.thread_w, cell // 2))
+        dark_f = 1.0 - (self.contrast / 100.0)
+        dr, dg, db = [int(c * dark_f) for c in (r, g, b)]
+        
+        high_f = 1.0 + (self.highlight / 100.0)
+        hr, hg, hb = [min(255, int(c * high_f)) for c in (r, g, b)]
 
-        # under-thread is the colour darkened by contrast %
-        dark_f  = 1.0 - self.contrast / 100.0
-        dr      = int(r * dark_f)
-        dg      = int(g * dark_f)
-        db      = int(b * dark_f)
+        # Draw Weave Tile
+        cell = max(4, self.cell_size)
+        tw = max(1, min(self.thread_w, cell - 1))
+        
+        # Create a scratch area slightly larger than brush to handle rotation
+        tile_sz = int((br + pad) * 2.5)
+        scratch = Image.new("RGBA", (tile_sz, tile_sz), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(scratch)
+        
+        cols = (tile_sz // cell) + 2
+        
+        # 1. Background (The "Gaps")
+        draw.rectangle([0, 0, tile_sz, tile_sz], fill=(0, 0, 0, alpha))
 
-        # build a square weave tile slightly bigger than the brush
-        tile_sz = (br * 2 + cell * 2)
-        # round up to nearest multiple of cell so pattern tiles cleanly
-        tile_sz = ((tile_sz + cell - 1) // cell) * cell
-
-        tile = Image.new("RGBA", (tile_sz, tile_sz), (0, 0, 0, 0))
-        td   = ImageDraw.Draw(tile)
-
-        cols = tile_sz // cell
-        rows = tile_sz // cell
-
-        # ── layer 1: horizontal threads (drawn first = "under" at even cols) ──
-        for row_i in range(rows + 1):
-            y0 = row_i * cell - tw // 2
-            y1 = y0 + tw
-            # draw full-width horizontal stripe
-            td.rectangle([0, y0, tile_sz, y1], fill=(r, g, b, alpha))
-
-        # ── layer 2: vertical threads (drawn on top, gaps reveal horizontal) ──
-        for col_i in range(cols + 1):
-            x0 = col_i * cell - tw // 2
-            x1 = x0 + tw
-            # draw full-height vertical stripe
-            td.rectangle([x0, 0, x1, tile_sz], fill=(r, g, b, alpha))
-
-        # ── layer 3: over/under illusion ──
-        # At each intersection we paint a small square in either the
-        # horizontal or vertical colour depending on the weave pattern.
-        # Even (row+col): horizontal thread on top  → vertical is under → darken it
-        # Odd  (row+col): vertical thread on top    → horizontal is under → darken it
-        for row_i in range(rows + 1):
-            for col_i in range(cols + 1):
-                ix  = col_i * cell - tw // 2
-                iy  = row_i * cell - tw // 2
-                # which thread passes under at this crossing?
-                if (row_i + col_i) % 2 == 0:
-                    # horizontal under: paint a dark vertical patch here
-                    td.rectangle([ix, iy, ix + tw, iy + tw],
-                                 fill=(dr, dg, db, alpha))
+        for i in range(-1, cols):
+            pos = i * cell
+            
+            for j in range(-1, cols):
+                x_pos = j * cell
+                y_pos = i * cell
+                
+                # Fiber color jitter
+                if self.color_shift > 0:
+                    v = random.randint(-self.color_shift, self.color_shift)
+                    cr, cg, cb = [max(0, min(255, c + v)) for c in (r, g, b)]
                 else:
-                    # vertical under: paint a dark horizontal patch here
-                    td.rectangle([ix, iy, ix + tw, iy + tw],
-                                 fill=(dr, dg, db, alpha))
+                    cr, cg, cb = r, g, b
 
-        # ── rotate the tile if requested ──────────────────────────────────────
-        if self.angle_deg % 180 != 0:
-            tile = tile.rotate(self.angle_deg, expand=False,
-                               resample=Image.BILINEAR)
+                # Weave Pattern Logic: (Row + Col) % 2
+                # This alternates which thread passes "Over"
+                if (i + j) % 2 == 0:
+                    # Horizontal thread is OVER
+                    # Vertical thread segment
+                    draw.rectangle([x_pos + (cell-tw)//2, y_pos, x_pos + (cell+tw)//2, y_pos + cell], fill=(dr, dg, db, alpha))
+                    # Horizontal thread segment
+                    draw.rectangle([x_pos, y_pos + (cell-tw)//2, x_pos + cell, y_pos + (cell+tw)//2], fill=(cr, cg, cb, alpha))
+                    # Add highlight on top thread
+                    draw.line([x_pos + 2, y_pos + cell//2, x_pos + cell - 2, y_pos + cell//2], fill=(hr, hg, hb, alpha // 2), width=tw//3)
+                else:
+                    # Vertical thread is OVER
+                    # Horizontal thread segment
+                    draw.rectangle([x_pos, y_pos + (cell-tw)//2, x_pos + cell, y_pos + (cell+tw)//2], fill=(dr, dg, db, alpha))
+                    # Vertical thread segment
+                    draw.rectangle([x_pos + (cell-tw)//2, y_pos, x_pos + (cell+tw)//2, y_pos + cell], fill=(cr, cg, cb, alpha))
+                    # Add highlight on top thread
+                    draw.line([x_pos + cell//2, y_pos + 2, x_pos + cell//2, y_pos + cell - 2], fill=(hr, hg, hb, alpha // 2), width=tw//3)
 
-        # ── mask to brush circle ──────────────────────────────────────────────
+        # 2. Rotate
+        if self.angle_deg != 0:
+            scratch = scratch.rotate(self.angle_deg, resample=Image.BILINEAR)
+
+        # 3. Mask to Circle
         mask = Image.new("L", (tile_sz, tile_sz), 0)
-        ImageDraw.Draw(mask).ellipse(
-            [tile_sz // 2 - br, tile_sz // 2 - br,
-             tile_sz // 2 + br, tile_sz // 2 + br],
-            fill=255,
-        )
-        tile.putalpha(Image.fromarray(
-            __import__("PIL.ImageChops", fromlist=["multiply"])
-            .multiply(tile.getchannel("A"), mask)
-        ))
+        m_draw = ImageDraw.Draw(mask)
+        m_draw.ellipse([tile_sz//2 - br, tile_sz//2 - br, tile_sz//2 + br, tile_sz//2 + br], fill=255)
+        
+        # Apply softness to mask
+        if self.softness > 0:
+            mask = mask.filter(ImageFilter.GaussianBlur(self.softness))
+        
+        final_tile = Image.new("RGBA", (tile_sz, tile_sz), (0, 0, 0, 0))
+        final_tile.paste(scratch, (0, 0), mask)
 
-        # ── composite onto layer ──────────────────────────────────────────────
-        lx   = cx - ox - tile_sz // 2
-        ly   = cy - oy - tile_sz // 2
-        dx   = max(0, lx);  dy = max(0, ly)
-        cr_x = max(0, -lx); cr_y = max(0, -ly)
-        cr_w = min(tile_sz - cr_x, W - dx)
-        cr_h = min(tile_sz - cr_y, H - dy)
-        if cr_w <= 0 or cr_h <= 0:
-            return
-        crop = tile.crop((cr_x, cr_y, cr_x + cr_w, cr_y + cr_h))
-        layer.image.alpha_composite(crop, dest=(dx, dy))
-
+        # 4. Composite
+        # Calculate centering crop
+        res_x = int(cx - ox - tile_sz // 2)
+        res_y = int(cy - oy - tile_sz // 2)
+        layer.image.alpha_composite(final_tile, dest=(res_x, res_y))
 
 TOOL_CLASS = WeaveBrushTool
