@@ -40,7 +40,7 @@
 
 <br/>
 
-![Preview](https://i.imgur.com/ZvuiuaP.png)
+![Preview](https://imgur.com/a/0jUImBy)
 
 <br/>
 
