@@ -40,7 +40,7 @@
 
 <br/>
 
-![Preview](https://imgur.com/a/v0ojFjO.png)
+![Preview](https://imgur.com/a/0jUImBy)
 
 <br/>
 
@@ -205,11 +205,11 @@ Layered/
 │                                 #   text, console, project tabs, dialogs)
 │
 ├── 📁 Plugins/                   # ← Drop your plugins here
-│   └── Brushes/                  #     Tool plugins, grouped by folder
-│       └── <Group>/              #     Group becomes a split-button in the Tools dock
-│           └── <Tool>/
-│               ├── tool.py       # Required — defines TOOL_CLASS = MyTool
-│               └── tool.json     # Optional manifest (display name, category override)
+│   ├── Brushes/                  #   Tool plugins, grouped by folder
+│   │   ├── <Group>/              #   Group becomes a split-button in the Tools dock
+│   │   │   └── <Tool>/
+│   │   │       ├── tool.py       #   Required — defines TOOL_CLASS = MyTool
+│   │   │       └── tool.json     #   Optional manifest (display name, category override)
 │   │   ├── Paint/                #   Brush · Eraser · Fill · Gradient
 │   │   ├── Draw/                 #   Line · Rectangle · Ellipse
 │   │   ├── Shapes/               #   Triangle · Star · Pentagon · Diamond · Hexagon
@@ -220,6 +220,8 @@ Layered/
 │   │   ├── Transform/            #   Move · Transform
 │   │   ├── Text/                 #   Text
 │   │   └── Utility/              #   Picker
+│   └── *.py                      #   Filter / action plugins (flat .py files)
+│
 ├── 📁 Brushes/                   # ← Brush presets (size/hardness/opacity/...)
 ├── 📁 docs/
 │   └── PLUGIN_API.md             # Full plugin API reference
@@ -284,7 +286,7 @@ Tools and brush presets live in two separate trees:
 
 The `Plugins/Brushes/Custom Brushes/` folder is designed for user-created tools — just **drag a new folder in** and it appears in the tool panel on next launch. No registration, no config.
 
-```text
+```
 Plugins/Brushes/
 └── Custom Brushes/          ← drop your tool folder here
     ├── Spray/
@@ -299,49 +301,36 @@ Plugins/Brushes/
 
 See `Plugins/Brushes/Custom Brushes/HOW_TO_ADD_TOOLS.md` for a full walkthrough with copy-paste templates for both simple tools and shape tools with resize handles.
 
-### Adding a custom tool (minimal template)
+### Adding a custom tool
 
 ```python
 # Plugins/Brushes/Paint/Marker/tool.py
 from app.tools import Tool
 from app.layer import Layer
 
+
 class MarkerTool(Tool):
-    name = "Marker"
+    name      = "Marker"
     commit_on = "release"   # "press" | "release" | None
+    is_default = False       # set True to make this the boot-time active tool
 
     def press(self, layer: Layer, x: int, y: int) -> None:
-        pass
+        pass   # called on mouse button down
 
     def move(self, layer: Layer, x: int, y: int) -> None:
-        pass
+        pass   # called while mouse is held and dragging
 
     def release(self, layer: Layer, x: int, y: int) -> None:
-        super().release(layer, x, y)   # required
+        super().release(layer, x, y)   # required — commits the stroke
 
-TOOL_CLASS = MarkerTool
-```
+    def on_select(self, ctx) -> None:
+        pass   # called when this tool becomes active
 
-```python
-# tool.py
-from PIL import ImageDraw
-from app.tools import Tool
-
-
-class MarkerTool(Tool):
-    name = "Marker"
-    is_default = False                # set True to make this the boot-time tool
-
-    def on_select(self, ctx): ...      # called when this tool becomes active
-    def on_deselect(self, ctx): ...    # called just before another tool takes over
-
-    def on_mouse_down(self, ctx, x, y): ...   # mouse press
-    def on_mouse_drag(self, ctx, x, y): ...   # mouse move while held
-    def on_mouse_up  (self, ctx, x, y): ...   # mouse release
+    def on_deselect(self, ctx) -> None:
+        pass   # called just before another tool takes over
 
     def build_ui(self, parent, ctx):
         """Return a QWidget hosted in the tool-settings toolbar.
-        The previous tool's widget is destroyed before this is called.
         Return None if the tool needs no settings UI."""
         return None
 
@@ -357,7 +346,7 @@ Optional `tool.json` lets a tool override its display name or category:
 
 Discovery is automatic on launch — no registration code, no menu wiring. The folder structure builds the UI:
 
-```text
+```
 Plugins/Brushes/
 ├── Paint/          →  [ Paint ▼ ]          Brush · Eraser · Fill · Gradient
 ├── Draw/           →  [ Draw ▼ ]           Line · Rectangle · Ellipse
