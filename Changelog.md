@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-05-09 — MainWindow Controllers, Cross-Platform Fonts & Test Suite
+
+### Added
+1. **`app/controllers/` package — three controllers carved out of `MainWindow`.**
+   `HistoryController` owns undo / redo / jump, `apply_snapshot`, history-panel
+   sync, and the `commit(label)` entry point used by every edit path
+   (`app/controllers/history_controller.py`). `SelectionController` owns
+   `select_all`, `deselect`, `invert`, `transform`, `fill_with` /
+   `fill_primary` / `fill_secondary`, `erase`, `crop_to_selection`, plus the
+   `selection_or_full()` helper that lets copy/paste treat *no selection* as
+   the whole canvas (`app/controllers/selection_controller.py`).
+   `PasteController` owns `copy` / `cut` / `paste` / `paste_into_current`
+   plus the three paste-exec variants (`paste_new_layer`,
+   `paste_into_layer`, `paste_new_project`), the cursor-anchored radial
+   menu, the internal copy buffer with source-project tag, and clipboard
+   round-tripping (`app/controllers/paste_controller.py`).
+   `MainWindow` instantiates `self.history_ctrl`, `self.selection_ctrl`,
+   `self.paste_ctrl` and forwards Qt actions/signals through them; the
+   public `commit_history` / `undo` / `redo` shims on the window stay so
+   plugins keep working.
+
+2. **`app/tools.py` — cross-platform font resolution.**
+   New `resolve_font_path(family)` walks platform-standard font directories
+   (`%WINDIR%\Fonts` + `%LOCALAPPDATA%\Microsoft\Windows\Fonts` on Windows,
+   `/System/Library/Fonts` + `/Library/Fonts` + `~/Library/Fonts` on macOS,
+   `/usr/share/fonts` + `/usr/local/share/fonts` + `~/.fonts` +
+   `~/.local/share/fonts` on Linux), with `winreg` font-registration
+   scanning kept on Windows for speed and renamed-file coverage. Indexes
+   `.ttf` / `.otf` / `.ttc` / `.otc` by filename stem and a hyphen/space-
+   stripped variant ("Helvetica-Bold" → also "helveticabold"), then falls
+   back to stripping trailing style words ("Arial Bold" → "Arial"). Cache
+   is built once on first call. Old Windows-only names
+   `_build_windows_font_cache` and `_resolve_windows_font` remain as
+   aliases so existing plugin imports keep resolving.
+
+3. **`tests/` — pytest suite with 87 tests.**
+   `test_blending.py` (20), `test_history.py` (13), `test_layer.py` (23),
+   `test_image_ops.py` (12), `test_tool_loader.py` (9), and
+   `test_font_resolver.py` (10) cover the pure-function blend math,
+   history snapshot stack, layer/stack ops, place-on-canvas math,
+   `_slug` + `tool_id` resolution (class attr / folder-derived /
+   manifest override), and font lookup including hyphen-squashing,
+   trailing-style stripping, OTF indexing, back-compat aliases, and
+   non-font extension rejection. `tests/conftest.py` provides shared
+   `solid_rgba` and `solid_arr` factories. `pytest.ini` pins
+   `testpaths = tests` and `pythonpath = .`. `requirements-dev.txt`
+   layers `pytest>=7.4` on top of the runtime requirements.
+
+### Changed
+4. **`Plugins/Brushes/Text/Text/tool.py` — import portable font lookup.**
+   Now imports `resolve_font_path` from `app.tools` instead of the
+   Windows-only `_resolve_windows_font` shim, so the Text tool resolves
+   font families on macOS and Linux installs without falling back to
+   Pillow's own search.
+
+5. **`Plugins/Brushes/_shared.py` — re-exports `Tool` and `ToolContext`.**
+   The shared bootstrap module now pulls `Tool`, `ToolContext`, and the
+   stamp / brush-mask / walk helpers from `app.tools` and lists them in
+   `__all__` so plugin `tool.py` files can `from _shared import Tool,
+   ToolContext` instead of reaching into `app.tools` directly.
+
+6. **`docs/PLUGIN_API.md` — refreshed plugin-author reference.**
+   Updated table of contents, registration table for tools / filters /
+   actions, and the minimal `GrayscalePlugin` example to match the
+   current `PluginContext` surface and the per-tool-folder
+   `Plugins/Brushes/<Group>/<ToolName>/tool.py` layout.
+
+7. **`build.bat` — tighter source mirror + richer release payload.**
+   The `Git Main` mirror now also excludes `session`, `.pytest_cache`,
+   and `.claude` so user-local data never leaks into the git tree.
+   The `Release` copy now also ships `Create_tool_or_Brush.py` (the
+   plugin-authoring cheat sheet) and the entire `docs/` folder
+   (`PLUGIN_API.md`, etc.) alongside `Layered.exe`, `Plugins/`,
+   `Icon.ico` / `Icon.png`, `README.md`, and `Changelog.md`.
+
+
 ## 2026-05-08 — Plugin Authoring Template, Tool Reorder & Preferences Dialog
 
 ### Added

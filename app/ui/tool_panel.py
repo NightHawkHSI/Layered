@@ -154,6 +154,13 @@ class ToolPanel(QWidget):
         self._layout_mode = layout
         self._buttons: dict[str, QPushButton] = {}
         self._shortcuts: dict[str, QShortcut] = {}
+        # tool_id -> display name. Lets the panel resolve special tools
+        # (e.g. the brush split-button) without hard-coding labels.
+        self._id_to_name: dict[str, str] = {
+            getattr(t, "tool_id", ""): n
+            for n, t in tools.items()
+            if getattr(t, "tool_id", "")
+        }
         # Per-tool icon overrides (set by host before adding the button — lets
         # custom brushes ship their own glyph instead of inheriting TOOL_ICONS).
         self._icon_overrides: dict[str, str] = {}
@@ -389,10 +396,19 @@ class ToolPanel(QWidget):
 
     # --- internals ----------------------------------------------------------
 
+    def register_tool_id(self, tool_id: str, name: str) -> None:
+        """Register a tool_id -> display-name mapping. Lets the panel resolve
+        special tools (brush, etc.) without hard-coding their labels."""
+        if tool_id and name:
+            self._id_to_name[tool_id] = name
+
+    def _name_for_id(self, tool_id: str) -> Optional[str]:
+        return self._id_to_name.get(tool_id)
+
     def _add_button(self, name: str) -> None:
         label = self._label_for(name)
         tip = self._tooltip_for(name)
-        if name == "Brush":  # 🖌️ Brush — split button with preset picker
+        if name == self._name_for_id("brush"):  # split button with preset picker
             btn = QToolButton()
             btn.setText(label)
             btn.setToolTip(tip)
@@ -573,7 +589,8 @@ class ToolPanel(QWidget):
         tool.
         """
         from PyQt6.QtWidgets import QMenu
-        btn = self._buttons.get("Brush")  # 🖌️ Brush
+        brush_name = self._name_for_id("brush")
+        btn = self._buttons.get(brush_name) if brush_name else None
         if btn is None or not isinstance(btn, QToolButton):
             return
         menu = QMenu(btn)
@@ -697,10 +714,13 @@ class ToolPanel(QWidget):
         if hasattr(self, "spacing_slider"):
             self.spacing_slider.setValue(int(preset.spacing * 100))
         # Check the Brush button and emit tool_selected so canvas switches.
-        btn = self._buttons.get("Brush")  # 🖌️ Brush
+        brush_name = self._name_for_id("brush")
+        if brush_name is None:
+            return
+        btn = self._buttons.get(brush_name)
         if btn is not None:
             btn.setChecked(True)
-        self.tool_selected.emit("Brush")  # 🖌️ Brush
+        self.tool_selected.emit(brush_name)
 
     # --- handlers -----------------------------------------------------------
 

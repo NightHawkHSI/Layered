@@ -16,6 +16,7 @@ Tool subclass to instantiate.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Tuple
@@ -27,22 +28,76 @@ from .layer import Layer
 
 
 # ---------------------------------------------------------------------------
-# Windows font helpers (used by TextTool.build_ui)
+# Cross-platform font helpers (used by TextTool.build_ui)
+#
+# Build a single index family-name -> font-file-path that works on Windows,
+# macOS, and Linux. Windows uses the registry for speed (font registrations
+# also cover renamed files); other platforms walk the standard font dirs.
+# Pillow's ImageFont.truetype takes a path or a name; passing an absolute
+# path is the only portable way to load a specific family on Linux.
 # ---------------------------------------------------------------------------
 
 _FONT_PATH_CACHE: dict[str, str] = {}
 _FONT_CACHE_BUILT = False
+_FONT_EXTS = {".ttf", ".otf", ".ttc", ".otc"}
 
 
-def _build_windows_font_cache() -> None:
-    global _FONT_CACHE_BUILT
-    if _FONT_CACHE_BUILT or sys.platform != "win32":
-        _FONT_CACHE_BUILT = True
+def _font_dirs() -> list[str]:
+    """Return platform-standard font directories that exist."""
+    candidates: list[str] = []
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        candidates.append(os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(os.path.join(local, "Microsoft", "Windows", "Fonts"))
+    elif sys.platform == "darwin":
+        candidates.extend([
+            "/System/Library/Fonts",
+            "/Library/Fonts",
+            os.path.join(home, "Library", "Fonts"),
+        ])
+    else:
+        candidates.extend([
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            os.path.join(home, ".fonts"),
+            os.path.join(home, ".local", "share", "fonts"),
+        ])
+    return [d for d in candidates if os.path.isdir(d)]
+
+
+def _index_font_dir(directory: str) -> None:
+    """Walk ``directory`` and index every font file by its filename stem.
+
+    Filename-stem indexing isn't perfect (some families have spaces dropped
+    or are bundled in TTC collections) but it's free, dependency-light, and
+    falls through to Pillow's own search if it misses.
+    """
+    for root, _dirs, files in os.walk(directory):
+        for fname in files:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in _FONT_EXTS:
+                continue
+            stem = os.path.splitext(fname)[0]
+            key = stem.strip().lower()
+            path = os.path.join(root, fname)
+            _FONT_PATH_CACHE.setdefault(key, path)
+            # Also index a hyphen-stripped variant ("Arial-Bold" -> "arialbold").
+            squashed = re.sub(r"[\s\-_]+", "", key)
+            if squashed and squashed != key:
+                _FONT_PATH_CACHE.setdefault(squashed, path)
+
+
+def _index_windows_registry() -> None:
+    """Windows-only: pull font registrations from HKLM/HKCU. Faster than
+    walking %WINDIR%/Fonts and catches user-installed fonts that live
+    outside the standard directory."""
+    if sys.platform != "win32":
         return
     try:
         import winreg  # type: ignore
     except ImportError:
-        _FONT_CACHE_BUILT = True
         return
     fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
     hives = [
@@ -64,14 +119,36 @@ def _build_windows_font_cache() -> None:
                     _FONT_PATH_CACHE.setdefault(family, path)
         except OSError:
             continue
+
+
+def _build_font_cache() -> None:
+    global _FONT_CACHE_BUILT
+    if _FONT_CACHE_BUILT:
+        return
+    _index_windows_registry()
+    for d in _font_dirs():
+        try:
+            _index_font_dir(d)
+        except OSError:
+            continue
     _FONT_CACHE_BUILT = True
 
 
-def _resolve_windows_font(family: str) -> Optional[str]:
-    _build_windows_font_cache()
+def resolve_font_path(family: str) -> Optional[str]:
+    """Look up an installed font family and return an absolute file path,
+    or None if the family isn't recognised. Works on Win/Mac/Linux."""
+    if not family:
+        return None
+    _build_font_cache()
     key = family.strip().lower()
-    if key in _FONT_PATH_CACHE:
-        return _FONT_PATH_CACHE[key]
+    cached = _FONT_PATH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    squashed = re.sub(r"[\s\-_]+", "", key)
+    cached = _FONT_PATH_CACHE.get(squashed)
+    if cached is not None:
+        return cached
+    # Strip trailing weight/style words ("Arial Bold" -> "Arial").
     parts = key.split()
     while len(parts) > 1:
         parts.pop()
@@ -79,6 +156,13 @@ def _resolve_windows_font(family: str) -> Optional[str]:
         if cand in _FONT_PATH_CACHE:
             return _FONT_PATH_CACHE[cand]
     return None
+
+
+# Back-compat aliases. Older callers (and the round-35 _builtin_tools shim)
+# imported the Windows-specific names; keep them resolving to the portable
+# implementation so tool.py files don't need to change.
+_build_windows_font_cache = _build_font_cache
+_resolve_windows_font = resolve_font_path
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +239,15 @@ class Tool:
     Subclasses override whichever methods they need.  No-op defaults are
     provided for every method so tools only implement what they use.
 
+    Identification:
+      tool_id   -- stable internal ID, used for all programmatic lookups.
+                   Lowercase, snake_case (e.g. "brush", "magic_wand").
+                   Set on the subclass; tool_loader derives a fallback from
+                   the folder name when omitted. NEVER use the display name
+                   or icon for lookups -- those are user-facing labels.
+      name      -- display label shown in UI. May change without breaking
+                   internal references as long as tool_id stays the same.
+
     Semantic roles (role string) let the core route certain actions
     without knowing concrete tool names:
       "default"       -- returned to after paste / commit (is_default=True preferred)
@@ -164,6 +257,7 @@ class Tool:
       "text"          -- text entry (Tab shortcut focuses settings widget)
     """
     name: str = "Tool"
+    tool_id: str = ""         # stable internal ID; derived from folder name if blank
     group: str = ""           # set by tool_loader from the parent folder name
     role: str = ""            # semantic role; see above
     icon: str = ""            # optional glyph shown on the tool button

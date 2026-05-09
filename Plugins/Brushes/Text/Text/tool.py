@@ -2,7 +2,7 @@ import importlib.util as _iu, sys as _sys
 from pathlib import Path as _P
 from typing import Callable, Optional
 from PIL import ImageFont
-from app.tools import _resolve_windows_font
+from app.tools import resolve_font_path
 
 _SHARED_KEY = "_layered_brushes_shared"
 if _SHARED_KEY not in _sys.modules:
@@ -23,6 +23,8 @@ ToolContext = _sh.ToolContext
 class TextTool(Tool):
     """Click to drop a re-editable text layer."""
     name = "Text"
+    tool_id = "text"
+    role = "text"
     commit_on = None
 
     def __init__(self, ctx: ToolContext):
@@ -100,19 +102,24 @@ class TextTool(Tool):
         return self._commit_active()
 
     def _load_font(self, family: str, size: int):
+        # 1. Cross-platform cache lookup (Win registry + Win/Mac/Linux dirs).
         if family:
-            path = _resolve_windows_font(family)
+            path = resolve_font_path(family)
             if path:
                 try:
                     return ImageFont.truetype(path, size)
                 except Exception:
                     pass
+        # 2. Let Pillow try its own search paths and bundled fallbacks.
         candidates = []
         if family:
-            candidates.append(family)
-            candidates.append(f"{family}.ttf")
-            candidates.append(f"{family.lower()}.ttf")
-        candidates.extend(["arial.ttf", "Arial.ttf", "DejaVuSans.ttf"])
+            candidates.extend([family, f"{family}.ttf", f"{family.lower()}.ttf"])
+        candidates.extend([
+            "arial.ttf", "Arial.ttf",                       # Windows default
+            "DejaVuSans.ttf", "DejaVuSans-Bold.ttf",        # Linux default
+            "Helvetica.ttc", "HelveticaNeue.ttc",           # macOS default
+            "LiberationSans-Regular.ttf",                   # alt Linux
+        ])
         for c in candidates:
             try:
                 return ImageFont.truetype(c, size)

@@ -56,6 +56,7 @@ from .ui.color_panel import ColorPanel
 from .ui.console import LogConsole
 from .ui.drop_dialog import DropActionDialog
 from .ui.export_dialog import ExportDialog
+from .controllers import HistoryController, PasteController, SelectionController
 from .ui.history_panel import HistoryPanel
 from .ui.layer_panel import LayerPanel
 from .ui.plugin_settings_dialog import PluginSettingsDialog
@@ -188,11 +189,16 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas(self.current().stack)
         self.canvas.selection_provider = lambda: self.current().selection
         self.canvas.set_tool(None)
+
+        # Controllers wired here so tool_ctx callbacks (above) can route
+        # through them. Canvas must already exist because selection_ctrl
+        # touches it on every selection change.
+        self.selection_ctrl = SelectionController(self)
+        self.paste_ctrl = PasteController(self)
         self.canvas.layer_changed.connect(self._on_canvas_changed)
         self.canvas.action_committed.connect(self._on_action_committed)
         self.canvas.images_dropped.connect(self._on_images_dropped)
         self.setCentralWidget(self.canvas)
-        self._copy_buffer = None  # PIL.Image.Image holding last copied region
         if self._splash:
             w, h = self.current().stack.width, self.current().stack.height
             self._splash.set_progress(35, f"Building canvas ({w}x{h})...")
@@ -206,9 +212,10 @@ class MainWindow(QMainWindow):
         self._add_dock("Layers", self.layer_panel, Qt.DockWidgetArea.RightDockWidgetArea)
 
         self.history_panel = HistoryPanel()
-        self.history_panel.undo_requested.connect(self._on_undo)
-        self.history_panel.redo_requested.connect(self._on_redo)
-        self.history_panel.jump_requested.connect(self._on_history_jump)
+        self.history_ctrl = HistoryController(self)
+        self.history_panel.undo_requested.connect(self.history_ctrl.undo)
+        self.history_panel.redo_requested.connect(self.history_ctrl.redo)
+        self.history_panel.jump_requested.connect(self.history_ctrl.jump)
         history_dock = self._add_dock("History", self.history_panel, Qt.DockWidgetArea.RightDockWidgetArea)
         # Stack History under Layers vertically so both fit at once.
         self.splitDockWidget(self._docks["Layers"], history_dock, Qt.Orientation.Vertical)
@@ -318,6 +325,9 @@ class MainWindow(QMainWindow):
             self._splash.set_progress(88, f"Registering {n} plugin item(s)...")
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
+            tid = getattr(tool, "tool_id", "")
+            if tid:
+                self.tool_panel.register_tool_id(tid, name)
             self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
             self.tool_panel.add_tool_button(name)
 
@@ -332,6 +342,9 @@ class MainWindow(QMainWindow):
             self.tools[name] = tool
             self.plugins.tools[name] = tool
             self._brush_tool_names.add(name)
+            tid = getattr(tool, "tool_id", "")
+            if tid:
+                self.tool_panel.register_tool_id(tid, name)
             self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
         if brush_cats:
             self.tool_panel.set_tool_categories(brush_cats)
@@ -371,6 +384,35 @@ class MainWindow(QMainWindow):
             self._splash.finish(self)
             self._splash = None
 
+    # --- tool lookup helpers -------------------------------------------------
+    # Internal code MUST NOT key off display name or icon glyph; those are
+    # user-facing labels and rename when prefs / locale / themes change.
+    # Use tool_id (stable, derived from folder/manifest) or role (semantic).
+
+    def _tool_by_id(self, tool_id: str):
+        if not hasattr(self, "tools"):
+            return None
+        return next(
+            (t for t in self.tools.values() if getattr(t, "tool_id", "") == tool_id),
+            None,
+        )
+
+    def _tool_name_by_id(self, tool_id: str) -> Optional[str]:
+        if not hasattr(self, "tools"):
+            return None
+        return next(
+            (n for n, t in self.tools.items() if getattr(t, "tool_id", "") == tool_id),
+            None,
+        )
+
+    def _tool_by_role(self, role: str):
+        if not hasattr(self, "tools"):
+            return None
+        return next(
+            (t for t in self.tools.values() if getattr(t, "role", "") == role),
+            None,
+        )
+
     def _post_plugin_tools_loaded(self) -> None:
         """Wire special tool hooks and activate the default tool after plugins load."""
         for name, tool in self.tools.items():
@@ -407,7 +449,13 @@ class MainWindow(QMainWindow):
         self._settings.setValue("window/state", self.saveState())
 
     def _save_tool_order(self, order: list) -> None:
-        self._settings.setValue("tools/order", list(order))
+        # Persist by tool_id so saved order survives display-name renames.
+        ids = []
+        for n in order:
+            t = self.tools.get(n)
+            tid = getattr(t, "tool_id", "") if t is not None else ""
+            ids.append(tid or n)
+        self._settings.setValue("tools/order", ids)
 
     def _apply_saved_tool_order(self) -> None:
         saved = self._settings.value("tools/order")
@@ -415,7 +463,16 @@ class MainWindow(QMainWindow):
             return
         if isinstance(saved, str):
             saved = [saved]
-        self.tool_panel.set_tool_order(list(saved))
+        # Translate saved tool_ids back to current display names. Entries that
+        # no longer match any tool_id are passed through as-is so historic
+        # display-name-based saves still apply where the name is unchanged.
+        id_to_name = {
+            getattr(t, "tool_id", ""): n
+            for n, t in self.tools.items()
+            if getattr(t, "tool_id", "")
+        }
+        order = [id_to_name.get(entry, entry) for entry in saved]
+        self.tool_panel.set_tool_order(order)
 
     def _reset_layout(self) -> None:
         self.restoreGeometry(self._default_geometry)
@@ -496,8 +553,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act("Quit", self.close, "Ctrl+Q"))
 
         edit_menu = mb.addMenu("&Edit")
-        self.undo_action = self._act("Undo", self._on_undo, "Ctrl+Z")
-        self.redo_action = self._act("Redo", self._on_redo, "Ctrl+Y")
+        self.undo_action = self._act("Undo", self.history_ctrl.undo, "Ctrl+Z")
+        self.redo_action = self._act("Redo", self.history_ctrl.redo, "Ctrl+Y")
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
         # Standard alt redo binding.
@@ -718,18 +775,13 @@ class MainWindow(QMainWindow):
         self.layer_panel.stack = proj.stack
         self.layer_panel.refresh()
         self._refresh_history_panel()
-        text_tool = self.tools.get("📝 Text") if hasattr(self, "tools") else None
+        text_tool = self._tool_by_id("text")
         if text_tool is not None:
             text_tool.attach_stack(proj.stack)
         self.setWindowTitle(f"Layered — {proj.display_name()}")
 
     def _refresh_history_panel(self) -> None:
-        h = self.current().history
-        self.history_panel.set_history(
-            h.labels(), h.index, h.can_undo(), h.can_redo()
-        )
-        self.undo_action.setEnabled(h.can_undo())
-        self.redo_action.setEnabled(h.can_redo())
+        self.history_ctrl.refresh_panel()
 
     def _refresh_tabs(self) -> None:
         from PIL.ImageQt import ImageQt
@@ -831,54 +883,23 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_action_committed(self, label: str) -> None:
-        self.current().commit(label)
-        self.layer_panel.refresh()
-        self._refresh_tabs()
-        self._refresh_history_panel()
-        if hasattr(self, "_plugin_event_listeners"):
-            self.emit_event("layer_changed", self.current().stack.active_index)
+        self.history_ctrl.commit(label)
 
     def _apply_snapshot_stack(self, snap) -> None:
-        proj = self.current()
-        proj.stack = snap.stack
-        proj.selection = getattr(snap, "selection", None)
-        proj.dirty = True
-        self.canvas.set_layer_stack(snap.stack, reset_view=False)
-        self.layer_panel.stack = snap.stack
-        self.layer_panel.refresh()
-        self.canvas.refresh()
-        self._refresh_tabs()
+        self.history_ctrl.apply_snapshot(snap)
 
     def _on_undo(self) -> None:
-        snap = self.current().history.undo()
-        if snap is None:
-            return
-        self._apply_snapshot_stack(snap)
-        self._refresh_history_panel()
-        self.statusBar().showMessage(f"Undo: {snap.label}")
+        self.history_ctrl.undo()
 
     def _on_redo(self) -> None:
-        snap = self.current().history.redo()
-        if snap is None:
-            return
-        self._apply_snapshot_stack(snap)
-        self._refresh_history_panel()
-        self.statusBar().showMessage(f"Redo: {snap.label}")
+        self.history_ctrl.redo()
 
     def _on_history_jump(self, index: int) -> None:
-        snap = self.current().history.jump(index)
-        if snap is None:
-            return
-        self._apply_snapshot_stack(snap)
-        self._refresh_history_panel()
-        self.statusBar().showMessage(f"Jump: {snap.label}")
+        self.history_ctrl.jump(index)
 
     def _on_tool_selected(self, name: str) -> None:
         prev = self.canvas.tool
-        text_tool = next(
-            (t for t in self.tools.values() if type(t).__name__ == "TextTool"),
-            None,
-        )
+        text_tool = self._tool_by_id("text")
         # Switching away from Text — finalise any in-progress text layer.
         if prev is text_tool and text_tool is not None and self.tools.get(name) is not text_tool:
             self._on_text_commit()
@@ -949,7 +970,7 @@ class MainWindow(QMainWindow):
             self._tool_settings_widget = widget
 
     def _on_text_changed(self) -> None:
-        text_tool = self.tools.get("📝 Text")
+        text_tool = self._tool_by_id("text")
         if text_tool is None:
             return
         # Only re-render when text tool is active and editing a live layer.
@@ -959,7 +980,7 @@ class MainWindow(QMainWindow):
         self.canvas.refresh()
 
     def _on_text_commit(self) -> None:
-        text_tool = self.tools.get("📝 Text")
+        text_tool = self._tool_by_id("text")
         if text_tool is None:
             return
         label = text_tool.commit()
@@ -984,11 +1005,11 @@ class MainWindow(QMainWindow):
         # via `_image_from_clipboard` (covers external screenshots /
         # browser images).
         default_w, default_h = 1024, 768
-        if self._copy_buffer is not None:
-            internal_img = self._copy_buffer[0]
+        if self.paste_ctrl.copy_buffer is not None:
+            internal_img = self.paste_ctrl.copy_buffer[0]
             default_w, default_h = internal_img.width, internal_img.height
         else:
-            cb = self._image_from_clipboard()
+            cb = self.paste_ctrl.image_from_clipboard()
             if cb is not None:
                 default_w, default_h = cb[0].width, cb[0].height
         dlg = NewCanvasDialog(self, w=default_w, h=default_h)
@@ -1326,102 +1347,22 @@ class MainWindow(QMainWindow):
     # --- selection / fill QoL ---
 
     def _on_invert_selection(self) -> None:
-        from .project import Selection
-        proj = self.current()
-        cw, ch = proj.stack.width, proj.stack.height
-        if proj.selection is None:
-            proj.selection = Selection.rect(0, 0, cw, ch, cw, ch)
-            self.canvas.refresh()
-            return
-        sel_mask = proj.selection.mask
-        if sel_mask.size != (cw, ch):
-            full = Image.new("L", (cw, ch), 0)
-            full.paste(sel_mask, (0, 0))
-            sel_mask = full
-        inverted = sel_mask.point(lambda v: 255 - v)
-        bb = inverted.getbbox()
-        if bb is None:
-            proj.selection = None
-        else:
-            proj.selection = Selection(bbox=bb, mask=inverted)
-        self.canvas.refresh()
+        self.selection_ctrl.invert()
 
     def _on_transform_selection(self) -> None:
-        proj = self.current()
-        if proj.selection is None:
-            self.statusBar().showMessage("No selection to transform.")
-            return
-        sel_transform_name = next(
-            (n for n in self.tools if n in ("🔧 Sel Transform", "Sel Transform")), None
-        )
-        if sel_transform_name is None:
-            return
-        self._on_tool_selected(sel_transform_name)
+        self.selection_ctrl.transform()
 
     def _fill_selection_with(self, color) -> None:
-        proj = self.current()
-        layer = proj.stack.active
-        if layer is None:
-            return
-        cw, ch = proj.stack.width, proj.stack.height
-        sel = proj.selection
-        from PIL import ImageChops
-        ox, oy = layer.offset
-        # Build a layer-image-aligned mask from the selection (or full
-        # layer if no selection).
-        if sel is None:
-            layer_mask = Image.new("L", layer.image.size, 255)
-        else:
-            sel_mask = sel.mask
-            if sel_mask.size != (cw, ch):
-                full = Image.new("L", (cw, ch), 0)
-                full.paste(sel_mask, (0, 0))
-                sel_mask = full
-            layer_mask = Image.new("L", layer.image.size, 0)
-            layer_mask.paste(sel_mask, (-ox, -oy))
-        fill_layer = Image.new("RGBA", layer.image.size, color)
-        r, g, b, a = fill_layer.split()
-        fill_alpha = ImageChops.multiply(a, layer_mask)
-        fill_layer = Image.merge("RGBA", (r, g, b, fill_alpha))
-        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        src.alpha_composite(fill_layer)
-        layer.image = src
-        proj.stack.invalidate_cache()
-        self.canvas.refresh()
-        self._mark_dirty()
-        self._on_action_committed("Fill")
+        self.selection_ctrl.fill_with(color)
 
     def _on_fill_primary(self) -> None:
-        self._fill_selection_with(self.tool_ctx.primary_color)
+        self.selection_ctrl.fill_primary()
 
     def _on_fill_secondary(self) -> None:
-        self._fill_selection_with(self.tool_ctx.secondary_color)
+        self.selection_ctrl.fill_secondary()
 
     def _erase_selection(self) -> None:
-        proj = self.current()
-        layer = proj.stack.active
-        if layer is None:
-            return
-        if proj.selection is None:
-            return
-        cw, ch = proj.stack.width, proj.stack.height
-        sel_mask = proj.selection.mask
-        if sel_mask.size != (cw, ch):
-            full = Image.new("L", (cw, ch), 0)
-            full.paste(sel_mask, (0, 0))
-            sel_mask = full
-        ox, oy = layer.offset
-        layer_mask = Image.new("L", layer.image.size, 0)
-        layer_mask.paste(sel_mask, (-ox, -oy))
-        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        r, g, b, a = src.split()
-        keep = layer_mask.point(lambda v: 255 - v)
-        new_a = ImageChops.multiply(a, keep)
-        layer.image = Image.merge("RGBA", (r, g, b, new_a))
-        proj.stack.invalidate_cache()
-        self.canvas.refresh()
-        self._mark_dirty()
-        self._on_action_committed("Erase selection")
+        self.selection_ctrl.erase()
 
     # --- image transforms ---
 
@@ -1452,30 +1393,7 @@ class MainWindow(QMainWindow):
         self._on_action_committed(f"Resize image {w}×{h}")
 
     def _on_crop_to_selection(self) -> None:
-        proj = self.current()
-        sel = proj.selection
-        if sel is None:
-            self.statusBar().showMessage("No selection to crop to.")
-            return
-        bb = sel.bbox
-        x0, y0, x1, y1 = bb
-        new_w, new_h = x1 - x0, y1 - y0
-        if new_w <= 0 or new_h <= 0:
-            return
-        stack = proj.stack
-        for layer in stack.layers:
-            ox, oy = layer.offset
-            # Translate the layer image so the crop bbox starts at (0,0).
-            new_img = Image.new("RGBA", (new_w, new_h), (0, 0, 0, 0))
-            new_img.paste(layer.image, (ox - x0, oy - y0))
-            layer.image = new_img
-            layer.offset = (0, 0)
-        stack.width, stack.height = new_w, new_h
-        proj.selection = None
-        stack.invalidate_cache()
-        self.canvas.fit_to_window()
-        self._mark_dirty()
-        self._on_action_committed(f"Crop to selection {new_w}×{new_h}")
+        self.selection_ctrl.crop_to_selection()
 
     def _on_flip(self, direction: str) -> None:
         proj = self.current()
@@ -1705,7 +1623,7 @@ class MainWindow(QMainWindow):
 
     def _tolerance_live_update(self) -> None:
         """Re-run the magic wand with the new tolerance from its last seed."""
-        tool = self.tools.get("🪄 Magic Wand") if hasattr(self, "tools") else None
+        tool = self._tool_by_id("magic_wand")
         if tool is None:
             return
         reapply = getattr(tool, "reapply", None)
@@ -1717,370 +1635,31 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_selection_changed(self, sel) -> None:
-        proj = self.current()
-        proj.selection = sel
-        self.canvas.refresh()
-        if hasattr(self, "_plugin_event_listeners"):
-            self.emit_event("selection_changed")
+        self.selection_ctrl.set_selection(sel)
 
     def _on_select_all(self) -> None:
-        from .project import Selection
-        proj = self.current()
-        cw, ch = proj.stack.width, proj.stack.height
-        proj.selection = Selection.rect(0, 0, cw, ch, cw, ch)
-        self.canvas.refresh()
+        self.selection_ctrl.select_all()
 
     def _on_deselect(self) -> None:
-        proj = self.current()
-        if proj.selection is None:
-            return
-        proj.selection = None
-        self.canvas.refresh()
+        self.selection_ctrl.deselect()
 
     def _selection_or_full(self):
-        from .project import Selection
-        proj = self.current()
-        if proj.selection is not None:
-            return proj.selection
-        cw, ch = proj.stack.width, proj.stack.height
-        return Selection.rect(0, 0, cw, ch, cw, ch)
+        return self.selection_ctrl.selection_or_full()
 
     def _on_copy(self) -> None:
-        proj = self.current()
-        layer = proj.stack.active
-        if layer is None:
-            return
-        sel = self._selection_or_full()
-        bb = sel.bbox
-        ox, oy = layer.offset
-        cw, ch = proj.stack.width, proj.stack.height
-        # Build the canvas-aligned layer buffer in NumPy. PIL's `paste`
-        # has version-dependent behaviour when pasting an RGBA image
-        # without an explicit mask (some Pillow builds implicitly use
-        # the source alpha as a mask, which premultiplies RGB into the
-        # transparent destination); doing the blit by hand keeps RGBA
-        # exactly as-is so semi-transparent and anti-aliased pixels
-        # round-trip losslessly.
-        import numpy as np
-        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        src_arr = np.asarray(src, dtype=np.uint8)
-        sh, sw = src_arr.shape[:2]
-        canvas_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
-        y0 = max(0, oy); y1 = min(ch, oy + sh)
-        x0 = max(0, ox); x1 = min(cw, ox + sw)
-        if y1 > y0 and x1 > x0:
-            canvas_arr[y0:y1, x0:x1] = src_arr[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
-
-        bx0, by0, bx1, by1 = bb
-        bx0 = max(0, min(cw, bx0)); bx1 = max(0, min(cw, bx1))
-        by0 = max(0, min(ch, by0)); by1 = max(0, min(ch, by1))
-        if bx1 <= bx0 or by1 <= by0:
-            return
-        crop_arr = canvas_arr[by0:by1, bx0:bx1].copy()
-
-        sel_mask = sel.mask
-        if sel_mask.size != (cw, ch):
-            full = Image.new("L", (cw, ch), 0)
-            full.paste(sel_mask, (0, 0))
-            sel_mask = full
-        mask_arr = np.asarray(sel_mask, dtype=np.uint16)[by0:by1, bx0:bx1]
-        crop_arr[..., 3] = (
-            crop_arr[..., 3].astype(np.uint16) * mask_arr // 255
-        ).astype(np.uint8)
-        cropped = Image.fromarray(crop_arr, mode="RGBA")
-
-        # Tag the buffer with the source project so a later paste can
-        # tell whether we're pasting back into the same project (keep
-        # original bbox position) or into a different one (treat like an
-        # external image paste — ask for size mode).
-        self._copy_buffer = (cropped, (bx0, by0, bx1, by1), proj)
-        self._push_image_to_clipboard(cropped)
-        self.statusBar().showMessage(f"Copied {bx1-bx0}×{by1-by0} region")
-
-    def _push_image_to_clipboard(self, img: Image.Image) -> None:
-        cb = QApplication.clipboard()
-        if cb is None:
-            return
-        rgba = img if img.mode == "RGBA" else img.convert("RGBA")
-        data = rgba.tobytes("raw", "RGBA")
-        qimg = QImage(data, rgba.width, rgba.height, rgba.width * 4,
-                      QImage.Format.Format_RGBA8888).copy()
-        cb.setImage(qimg)
+        self.paste_ctrl.copy()
 
     def _on_cut(self) -> None:
-        self._on_copy()
-        proj = self.current()
-        layer = proj.stack.active
-        if layer is None or self._copy_buffer is None:
-            return
-        # Erase pixels inside selection mask on active layer.
-        sel = self._selection_or_full()
-        cw, ch = proj.stack.width, proj.stack.height
-        canvas_mask = sel.mask
-        if canvas_mask.size != (cw, ch):
-            full = Image.new("L", (cw, ch), 0)
-            full.paste(canvas_mask, (0, 0))
-            canvas_mask = full
-        ox, oy = layer.offset
-        layer_mask = Image.new("L", layer.image.size, 0)
-        layer_mask.paste(canvas_mask, (-ox, -oy))
-        from PIL import ImageChops
-        src = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        r, g, b, a = src.split()
-        keep = layer_mask.point(lambda v: 255 - v)
-        a = ImageChops.multiply(a, keep)
-        layer.image = Image.merge("RGBA", (r, g, b, a))
-        proj.stack.invalidate_cache()
-        self.canvas.refresh()
-        self._mark_dirty()
-        self._on_action_committed("Cut selection")
-
-    def _resolve_paste_source(self):
-        """Return (img, bb, source_proj, source_label) or (None, None, None, "")."""
-        cb = QApplication.clipboard()
-        img: Optional[Image.Image] = None
-        bb: Optional[tuple[int, int, int, int]] = None
-        source_proj: Optional[Project] = None
-        source_label = "Pasted"
-        if self._copy_buffer is not None:
-            img, bb, source_proj = self._copy_buffer
-            source_label = "Pasted Selection"
-            if cb is not None and not cb.ownsClipboard():
-                external = self._image_from_clipboard()
-                if external is not None:
-                    ext_img, ext_label = external
-                    if ext_img.size != img.size:
-                        img, source_label = ext_img, ext_label
-                        bb = None
-                        source_proj = None
-        else:
-            external = self._image_from_clipboard()
-            if external is not None:
-                img, source_label = external
-        return img, bb, source_proj, source_label
+        self.paste_ctrl.cut()
 
     def _on_paste(self) -> None:
-        """Show a cursor-anchored radial menu of paste choices.
-
-        Default options: New Layer / Current Layer / New Project. When
-        the clipboard image is bigger than the current canvas, the menu
-        expands to the four extend/keep × new/current variants so the
-        user controls canvas resizing inline instead of via a separate
-        modal dialog.
-        """
-        proj = self.current()
-        if proj is None:
-            return
-        img, bb, source_proj, source_label = self._resolve_paste_source()
-        if img is None:
-            return
-        cw, ch = proj.stack.width, proj.stack.height
-        iw, ih = img.size
-        bigger = iw > cw or ih > ch
-
-        labels: list[str] = []
-        actions: list = []
-        if bigger:
-            labels = [
-                "New Layer\n(keep canvas)",
-                "Current Layer\n(keep canvas)",
-                "New Layer\n(extend canvas)",
-                "Current Layer\n(extend canvas)",
-                "New Project",
-            ]
-            actions = [
-                lambda: self._paste_new_layer(img, bb, source_proj, source_label, mode="crop"),
-                lambda: self._paste_into_layer(img, bb, source_proj, source_label, extend=False),
-                lambda: self._paste_new_layer(img, bb, source_proj, source_label, mode="extend"),
-                lambda: self._paste_into_layer(img, bb, source_proj, source_label, extend=True),
-                lambda: self._paste_new_project(img, source_label),
-            ]
-        else:
-            labels = ["New Layer", "Current Layer", "New Project"]
-            actions = [
-                lambda: self._paste_new_layer(img, bb, source_proj, source_label, mode="anchor"),
-                lambda: self._paste_into_layer(img, bb, source_proj, source_label, extend=False),
-                lambda: self._paste_new_project(img, source_label),
-            ]
-
-        from PyQt6.QtGui import QCursor
-        from .ui.radial_menu import RadialMenu
-        menu = RadialMenu(labels, self)
-        menu.chosen.connect(lambda i: actions[i]())
-        menu.show_at(QCursor.pos())
-        # Hold a ref so the popup isn't GC'd before it closes.
-        self._radial_menu = menu
-
-    # --- paste exec helpers (shared by Ctrl+V radial + Ctrl+Shift+V) ---
-
-    def _paste_new_layer(self, img, bb, source_proj, source_label: str, mode: str) -> None:
-        """mode: 'anchor' (same-proj or fits), 'extend', 'crop'."""
-        import numpy as np
-        proj = self.current()
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        cw, ch = proj.stack.width, proj.stack.height
-        iw, ih = img.size
-
-        if source_proj is proj and bb is not None:
-            # Same-project, drop pixels back at original bbox.
-            img_arr = np.asarray(img, dtype=np.uint8)
-            ihx, iwx = img_arr.shape[:2]
-            bx, by = bb[0], bb[1]
-            new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
-            y0 = max(0, by); y1 = min(ch, by + ihx)
-            x0 = max(0, bx); x1 = min(cw, bx + iwx)
-            if y1 > y0 and x1 > x0:
-                new_arr[y0:y1, x0:x1] = img_arr[y0 - by:y1 - by, x0 - bx:x1 - bx]
-            proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
-            action_desc = "Paste selection"
-        else:
-            img_arr = np.asarray(img, dtype=np.uint8)
-            ih_a, iw_a = img_arr.shape[:2]
-            if mode == "extend":
-                new_w, new_h = max(cw, iw), max(ch, ih)
-                resized = (new_w, new_h) != (cw, ch)
-                if resized:
-                    proj.stack.resize_canvas(new_w, new_h)
-                # Center the pasted pixels in the (possibly enlarged) canvas
-                # so the user sees their image in the middle, not the
-                # top-left corner.
-                new_arr = np.zeros((new_h, new_w, 4), dtype=np.uint8)
-                ox = max(0, (new_w - iw_a) // 2)
-                oy = max(0, (new_h - ih_a) // 2)
-                new_arr[oy:oy + ih_a, ox:ox + iw_a] = img_arr
-                proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
-                if resized:
-                    self.canvas.fit_to_window()
-                action_desc = f"Paste ({source_label}) — extend canvas to {new_w}×{new_h}"
-            elif mode == "anchor":
-                ox = max(0, (cw - iw) // 2)
-                oy = max(0, (ch - ih) // 2)
-                new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
-                new_arr[oy:oy + ih_a, ox:ox + iw_a] = img_arr
-                proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
-                action_desc = f"Paste ({source_label}) — anchor full image"
-            else:  # crop — fit pasted pixels into canvas, centered
-                new_arr = np.zeros((ch, cw, 4), dtype=np.uint8)
-                ih_c = min(ih_a, ch); iw_c = min(iw_a, cw)
-                # Source crop offset: pull from the center of the source
-                # image so we keep the visually-important middle.
-                src_x = max(0, (iw_a - iw_c) // 2)
-                src_y = max(0, (ih_a - ih_c) // 2)
-                # Destination centered on canvas.
-                dst_x = max(0, (cw - iw_c) // 2)
-                dst_y = max(0, (ch - ih_c) // 2)
-                new_arr[dst_y:dst_y + ih_c, dst_x:dst_x + iw_c] = img_arr[src_y:src_y + ih_c, src_x:src_x + iw_c]
-                proj.stack.add_layer(Layer(name=source_label, image=Image.fromarray(new_arr, mode="RGBA")))
-                action_desc = f"Paste ({source_label}) — crop to canvas"
-
-        proj.stack.invalidate_cache()
-        # Keep a selection active around the pasted content so the user can
-        # immediately fill/modify it (Paint.NET-style workflow).
-        # Create a selection mask from the pasted pixels' alpha channel.
-        pasted_layer = proj.stack.active
-        if pasted_layer is not None:
-            from .project import Selection
-            pasted_img = pasted_layer.image
-            # Create selection from non-transparent pixels
-            if pasted_img.mode == "RGBA":
-                alpha = pasted_img.split()[3]
-                sel_mask = alpha.point(lambda a: 255 if a > 0 else 0)
-            else:
-                sel_mask = Image.new("L", pasted_img.size, 255)
-            bb = sel_mask.getbbox()
-            if bb is not None:
-                proj.selection = Selection(bbox=bb, mask=sel_mask)
-            else:
-                proj.selection = None
-        else:
-            proj.selection = None
-        # Ensure the newly added layer is active (add_layer should do this, but be explicit)
-        proj.stack.set_active(len(proj.stack.layers) - 1)
-        # Refresh UI BEFORE activating transform tool so the tool sees the correct active layer
-        self.layer_panel.refresh()
-        self.canvas.refresh()
-        self._mark_dirty()
-        self._on_action_committed(action_desc)
-        # Now activate transform tool on the properly-refreshed, active layer
-        self._activate_transform_tool()
-
-    def _paste_into_layer(self, img, bb, source_proj, source_label: str, *, extend: bool) -> None:
-        import numpy as np
-        proj = self.current()
-        layer = proj.stack.active
-        if layer is None:
-            self.statusBar().showMessage("No active layer to paste into.")
-            return
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-
-        if extend:
-            cw, ch = proj.stack.width, proj.stack.height
-            iw, ih = img.size
-            new_w, new_h = max(cw, iw), max(ch, ih)
-            if (new_w, new_h) != (cw, ch):
-                proj.stack.resize_canvas(new_w, new_h)
-                self.canvas.fit_to_window()
-
-        ox, oy = layer.offset
-        if source_proj is proj and bb is not None:
-            cx, cy = bb[0], bb[1]
-        else:
-            cx, cy = 0, 0
-
-        img_arr = np.asarray(img, dtype=np.uint8)
-        ih, iw = img_arr.shape[:2]
-        lw, lh = layer.image.size
-        ly = cy - oy; lx = cx - ox
-        y0 = max(0, ly); y1 = min(lh, ly + ih)
-        x0 = max(0, lx); x1 = min(lw, lx + iw)
-        if y1 <= y0 or x1 <= x0:
-            self.statusBar().showMessage("Paste falls outside the active layer.")
-            return
-        buf = np.zeros((lh, lw, 4), dtype=np.uint8)
-        buf[y0:y1, x0:x1] = img_arr[y0 - ly:y1 - ly, x0 - lx:x1 - lx]
-        pasted = Image.fromarray(buf, mode="RGBA")
-        src_layer = layer.image if layer.image.mode == "RGBA" else layer.image.convert("RGBA")
-        src_layer.alpha_composite(pasted)
-        layer.image = src_layer
-        proj.selection = None
-        proj.stack.invalidate_cache()
-        self.layer_panel.refresh()
-        self.canvas.refresh()
-        self._mark_dirty()
-        self._on_action_committed(f"Paste into {layer.name}")
-
-    def _paste_new_project(self, img, source_label: str) -> None:
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        w, h = img.size
-        proj = Project.blank(w, h, name=source_label)
-        # Replace the auto-Background with the pasted image so the new
-        # project shows the pixels immediately.
-        proj.stack.layers = []
-        proj.stack.active_index = -1
-        proj.stack.add_layer(Layer(name=source_label, image=img, offset=(0, 0)))
-        proj.dirty = True
-        self.projects.append(proj)
-        self.active_project = len(self.projects) - 1
-        self._bind_current()
-        self._refresh_tabs()
+        self.paste_ctrl.paste()
 
     def _on_paste_into_current(self) -> None:
-        """Quick `Ctrl+Shift+V` shortcut — skip the radial menu and paste
-        directly into the active layer.
-        """
-        img, bb, source_proj, source_label = self._resolve_paste_source()
-        if img is None:
-            return
-        self._paste_into_layer(img, bb, source_proj, source_label, extend=False)
+        self.paste_ctrl.paste_into_current()
 
     def _activate_transform_tool(self) -> None:
-        # Find the transform tool by name (handles both emoji and plain variants)
-        transform_name = next(
-            (n for n in self.tools if n in ("🔲 Transform", "Transform")), None
-        )
+        transform_name = self._tool_name_by_id("transform")
         if transform_name is None:
             return
         self._on_tool_selected(transform_name)
@@ -2091,75 +1670,10 @@ class MainWindow(QMainWindow):
 
     def _ask_paste_mode(self, img_size: tuple[int, int],
                         canvas_size: tuple[int, int]) -> Optional[str]:
-        iw, ih = img_size
-        cw, ch = canvas_size
-        bigger = iw > cw or ih > ch
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Paste Image")
-        box.setText(f"Pasted image: {iw} × {ih}\nCanvas: {cw} × {ch}")
-        info = "How should the image be placed?\n\n"
-        if bigger:
-            info += "• Extend Canvas — grow canvas so the full image fits.\n"
-        info += (
-            "• Anchor Full Image — keep canvas size; layer stores the full image so you "
-            "can move/resize it later without losing pixels outside the canvas.\n"
-            "• Crop to Canvas — keep canvas size; clip the image to canvas bounds (legacy)."
-        )
-        box.setInformativeText(info)
-
-        extend_btn = box.addButton("Extend Canvas", QMessageBox.ButtonRole.AcceptRole) if bigger else None
-        anchor_btn = box.addButton("Anchor Full Image", QMessageBox.ButtonRole.AcceptRole)
-        crop_btn = box.addButton("Crop to Canvas", QMessageBox.ButtonRole.AcceptRole)
-        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
-
-        box.setDefaultButton(extend_btn if extend_btn is not None else anchor_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is None or clicked is cancel_btn:
-            return None
-        if clicked is extend_btn:
-            return "extend"
-        if clicked is anchor_btn:
-            return "anchor"
-        if clicked is crop_btn:
-            return "crop"
-        return None
+        return self.paste_ctrl.ask_paste_mode(img_size, canvas_size)
 
     def _image_from_clipboard(self) -> Optional[tuple[Image.Image, str]]:
-        cb = QApplication.clipboard()
-        if cb is None:
-            return None
-        md = cb.mimeData()
-        if md is None:
-            return None
-
-        if md.hasImage():
-            qimg = cb.image()
-            if not qimg.isNull():
-                buf = QBuffer()
-                buf.open(QIODevice.OpenModeFlag.ReadWrite)
-                if qimg.save(buf, "PNG"):
-                    from io import BytesIO
-                    img = Image.open(BytesIO(bytes(buf.data()))).convert("RGBA")
-                    buf.close()
-                    return img, "Pasted Image"
-                buf.close()
-
-        if md.hasUrls():
-            for url in md.urls():
-                if not url.isLocalFile():
-                    continue
-                path = url.toLocalFile()
-                try:
-                    img = Image.open(path).convert("RGBA")
-                except Exception as e:
-                    self.log.warning("Paste: could not open %s: %s", path, e)
-                    continue
-                return img, Path(path).stem or "Pasted Image"
-
-        return None
+        return self.paste_ctrl.image_from_clipboard()
 
     def _on_about(self) -> None:
         QMessageBox.about(
@@ -2184,7 +1698,7 @@ class MainWindow(QMainWindow):
         # Tab while Text tool is active focuses the Text panel input so
         # the user can type/edit immediately after dropping a text layer
         # without reaching for the mouse.
-        if event.key() == _Qt.Key.Key_Tab and self.canvas.tool is self.tools.get("📝 Text"):
+        if event.key() == _Qt.Key.Key_Tab and self.canvas.tool is self._tool_by_id("text"):
             panel = getattr(self, "text_panel", None)
             if panel is not None and getattr(panel, "text_edit", None) is not None:
                 dock = self._docks.get("Text")
@@ -2231,7 +1745,9 @@ class MainWindow(QMainWindow):
         #     beyond the canvas (or sits at a non-zero offset) leaves
         #     downstream tools — box brush, fill, etc. — misaligned
         #     against the visible pixels.
-        if active_name in ("🔲 Transform", "Transform", "✋ Move", "Move"):
+        active_tool = self.tools.get(active_name) if active_name else None
+        active_id = getattr(active_tool, "tool_id", "")
+        if active_id in {"transform", "move"}:
             layer = proj.stack.active
             if layer is not None:
                 self._crop_layer_to_canvas(layer, proj.stack.width, proj.stack.height)
@@ -2239,14 +1755,14 @@ class MainWindow(QMainWindow):
                 self.canvas.refresh()
                 self._on_action_committed("Transform: apply")
         # 2b) Transform/Move tool — switch back to Brush so Enter cleanly exits.
-        for _tname in ("Transform", "Move", "Sel Transform", "🔲 Transform", "🔧 Sel Transform", "✋ Move"):
-            if active_name == _tname:
-                default = next((t for t in self.tools.values() if getattr(t, "is_default", False)), None)
-                if default is None:
-                    default = self.tools.get("Brush") or self.tools.get("🖌️ Brush")
-                if default is not None:
-                    self._on_tool_selected(next(n for n, t in self.tools.items() if t is default))
-                break
+        if active_id in {"transform", "move", "sel_transform"}:
+            default = next((t for t in self.tools.values() if getattr(t, "is_default", False)), None)
+            if default is None:
+                default = self._tool_by_id("brush")
+            if default is not None:
+                default_name = next((n for n, t in self.tools.items() if t is default), None)
+                if default_name is not None:
+                    self._on_tool_selected(default_name)
         # 3) Drop the marching-ants selection.
         if proj.selection is not None:
             proj.selection = None
@@ -2378,15 +1894,14 @@ class MainWindow(QMainWindow):
         self.emit_event("selection_changed")
 
     def commit_history(self, label: str) -> None:
-        self.current().commit(label)
-        self._refresh_history_panel()
+        # Plugin host API: same as the internal commit, just under a public name.
+        self.history_ctrl.commit(label)
 
-    # `undo`/`redo` already exist as `_on_undo`/`_on_redo`; expose under host names.
     def undo(self) -> None:  # type: ignore[override]
-        self._on_undo()
+        self.history_ctrl.undo()
 
     def redo(self) -> None:  # type: ignore[override]
-        self._on_redo()
+        self.history_ctrl.redo()
 
     def on_event(self, event: str, fn) -> None:
         self._plugin_event_listeners.setdefault(event, []).append(fn)
@@ -2597,6 +2112,9 @@ class MainWindow(QMainWindow):
             )
             for name, tool in self.plugins.tools.items():
                 self.tools[name] = tool
+                tid = getattr(tool, "tool_id", "")
+                if tid:
+                    self.tool_panel.register_tool_id(tid, name)
                 self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
                 self.tool_panel.add_tool_button(name)
 
@@ -2610,6 +2128,9 @@ class MainWindow(QMainWindow):
                     self.tools[name] = tool
                     self.plugins.tools[name] = tool
                 self._brush_tool_names.add(name)
+                tid = getattr(tool, "tool_id", "")
+                if tid:
+                    self.tool_panel.register_tool_id(tid, name)
                 self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
             if brush_cats:
                 self.tool_panel.set_tool_categories(brush_cats)

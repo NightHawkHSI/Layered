@@ -20,6 +20,8 @@ ToolContext = _sh.ToolContext
 class SelectionTransformTool(Tool):
     """Transform the active selection: drag handles to scale/move."""
     name = "Sel Transform"
+    tool_id = "sel_transform"
+    role = "sel_transform"
     commit_on = None
     HANDLE_SIZE = 10
 

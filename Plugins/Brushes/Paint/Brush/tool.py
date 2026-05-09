@@ -18,6 +18,7 @@ _walk = _sh._walk
 
 class BrushTool(Tool):
     name = "Brush"
+    tool_id = "brush"
 
     def _spacing(self) -> float:
         return max(1.0, self.ctx.brush_size * self.ctx.brush_spacing)

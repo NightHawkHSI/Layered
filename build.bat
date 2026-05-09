@@ -61,7 +61,7 @@ REM ============================================================================
 
 call :stage 10 "Mirroring Source"
 echo    %B%-%N% Mirroring to: %Y%Git Main%N%
-robocopy "%ROOT%" "%GITMAIN%" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "%OUT%" "logs" "__pycache__" ".git" ".idea" ".vscode" ".venv" "venv" ".vs" "build" "dist" /XF "*.pyc" "*.pyo" "*.log" "Bugs.txt" "*.spec" >> "%LOGFILE%" 2>&1
+robocopy "%ROOT%" "%GITMAIN%" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "%OUT%" "logs" "session" "__pycache__" ".pytest_cache" ".git" ".idea" ".vscode" ".venv" "venv" ".vs" ".claude" "build" "dist" /XF "*.pyc" "*.pyo" "*.log" "Bugs.txt" "bugs.txt" "*.spec" >> "%LOGFILE%" 2>&1
 if %ERRORLEVEL% GEQ 8 goto :fail_robocopy
 
 call :stage 25 "Python Environment"
@@ -117,11 +117,15 @@ if exist "%ROOT%\Plugins" (
     echo    %B%-%N% Syncing: %Y%Plugins%N%
     robocopy "%ROOT%\Plugins" "%RELEASE%\Plugins" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
 )
-for %%F in ("Icon.ico", "Icon.png", "README.md", "Changelog.md") do (
+for %%F in ("Icon.ico", "Icon.png", "README.md", "Changelog.md", "Create_tool_or_Brush.py") do (
     if exist "%ROOT%\%%~F" (
         echo    %B%^>%N% Copying: %W%%%~F%N%
         copy /Y "%ROOT%\%%~F" "%RELEASE%\" >nul
     )
+)
+if exist "%ROOT%\docs" (
+    echo    %B%-%N% Syncing: %Y%docs%N%
+    robocopy "%ROOT%\docs" "%RELEASE%\docs" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
 )
 
 call :stage 100 "Cleaning Up"

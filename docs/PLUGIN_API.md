@@ -242,14 +242,28 @@ TOOL_CLASS = DotTool
 ### Optional `tool.json`
 
 ```json
-{ "name": "✏️ Dot", "category": "Paint" }
+{ "name": "✏️ Dot", "id": "dot", "category": "Paint" }
 ```
 
 | Key | Purpose |
 |---|---|
 | `name` | Display name (defaults to `Tool.name` or the folder name) |
+| `id` | Stable internal ID. Defaults to the class `tool_id` attribute, then a slug of the folder name. |
 | `category` | Override the parent folder as the group label |
+| `icon` | Optional glyph shown on the tool button |
 | `class` | Resolve a class from `app.tools` instead of `tool.py` (legacy) |
+
+### `tool_id` — stable identifier
+
+Set `tool_id` on your `Tool` subclass to give it a stable, lowercase snake_case identifier (`"brush"`, `"magic_wand"`). Host code looks tools up by `tool_id` rather than by display name, so renaming the user-facing label or icon never breaks references. If you omit `tool_id`, the loader derives one from the folder name.
+
+```python
+class DotTool(Tool):
+    name = "Dot"          # display label — may change
+    tool_id = "dot"       # stable internal ID — keep forever
+```
+
+> **Underscore-prefixed files are skipped by the loader.** Anything in `Plugins/Brushes/` whose filename starts with `_` (e.g. `_shared.py`) is treated as private helper code and never instantiated as a tool.
 
 ### Mouse-event compatibility shim
 

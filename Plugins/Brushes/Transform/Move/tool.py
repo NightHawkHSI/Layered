@@ -13,6 +13,8 @@ _t = _sys.modules[_TRANSFORM_KEY]
 
 class MoveTool(_t.TransformTool):
     name = "Move"
+    tool_id = "move"
+    role = "move"
 
 
 TOOL_CLASS = MoveTool

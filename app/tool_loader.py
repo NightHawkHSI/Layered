@@ -11,6 +11,7 @@ Manifest schema (all keys optional except `name`):
 
     {
         "name":     "Brush",       # display name (key in tools dict)
+        "id":       "brush",          # stable internal ID; falls back to folder name
         "class":    "BrushTool",      # class name in app.tools (used when no tool.py)
         "category": "Basic",          # override the parent folder name (optional)
         "icon":     "🖌"              # optional glyph shown on the tool button
@@ -25,10 +26,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import Any, Tuple
 
 from . import tools as tools_mod
+
+
+def _slug(text: str) -> str:
+    """Normalise text into a stable lowercase snake_case ID."""
+    out = re.sub(r"[^0-9a-zA-Z]+", "_", text.strip()).strip("_").lower()
+    return out or "tool"
 
 
 def load_tools(brushes_dir: Path, ctx) -> Tuple[dict[str, Any], dict[str, list[str]]]:
@@ -73,6 +81,14 @@ def load_tools(brushes_dir: Path, ctx) -> Tuple[dict[str, Any], dict[str, list[s
                 continue
             try:
                 inst.ctx = ctx
+            except Exception:
+                pass
+            # tool_id resolution order: manifest "id" > class attr > folder slug.
+            # Stable ID lets host code look tools up without depending on the
+            # display name or icon, which can change without breaking refs.
+            tool_id = meta.get("id") or getattr(cls, "tool_id", "") or _slug(tool_dir.name)
+            try:
+                inst.tool_id = tool_id
             except Exception:
                 pass
             effective_cat = meta.get("category") or cat

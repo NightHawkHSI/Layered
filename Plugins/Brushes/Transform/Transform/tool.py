@@ -19,6 +19,8 @@ ToolContext = _sh.ToolContext
 class TransformTool(Tool):
     """Scale the active layer by dragging anchor handles on its bbox."""
     name = "Transform"
+    tool_id = "transform"
+    role = "transform"
     commit_on = "release"
 
     HANDLE_SIZE = 10
