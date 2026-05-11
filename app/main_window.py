@@ -6,12 +6,13 @@ dialog.
 """
 from __future__ import annotations
 
+import struct
 import sys
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image, ImageChops
-from PyQt6.QtCore import QBuffer, QIODevice, QSettings, Qt
+from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QSettings, Qt
 from PyQt6.QtGui import QAction, QIcon, QImage, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -75,6 +76,10 @@ PLUGINS_DIR = PROJECT_DIR / "Plugins"
 SESSION_DIR = PROJECT_DIR / "session"
 PREFS_PATH  = PROJECT_DIR / "prefs.json"
 BRUSHES_DIR = PROJECT_DIR / "Brushes"
+# Bundled default-layout file. Ships with the build (sits next to the
+# exe in the Release folder, so it is editable post-build) so a fresh
+# install starts with the dev-curated layout.
+DEFAULT_LAYOUT_FILE = PROJECT_DIR / "assets" / "default_layout.bin"
 ICON_PATH = RESOURCE_DIR / "Icon.ico"
 if not ICON_PATH.exists():
     ICON_PATH = PROJECT_DIR / "Icon.ico"
@@ -124,22 +129,14 @@ class MainWindow(QMainWindow):
         self.prefs = Preferences(PREFS_PATH)
         self._apply_accent(self.prefs.accent_color)
 
-        if self.prefs.restore_session:
-            restored = load_session(SESSION_DIR)
-        else:
-            restored = []
-        if restored:
-            self.projects: list[Project] = restored
-            self.log.info("Restored %d project(s) from session", len(restored))
-        else:
-            self.projects = [Project.blank(width, height)]
+        # Always start with a blank project so the window can paint
+        # immediately. Session restore is deferred to first idle tick.
+        self.projects: list[Project] = [Project.blank(width, height)]
+        self._pending_session_restore = bool(self.prefs.restore_session)
         if self._splash:
             import time
             self._splash._shown_at = time.monotonic()
-            count = len(restored) if restored else 0
-            msg = (f"Restored {count} project(s)" if count
-                   else "Creating blank project...")
-            self._splash.set_progress(15, msg)
+            self._splash.set_progress(15, "Creating blank project...")
         self.active_project: int = 0
         self._last_export_dir: Optional[Path] = None
         self._last_open_dir: Optional[Path] = None
@@ -233,19 +230,36 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tool_settings_bar)
         # Plugin-driven settings UI: a single persistent host widget lives
         # in the toolbar; each tool's build_ui() result is parented to it
-        # so the toolbar never reflows when tools switch.
-        from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy
-        self._tool_settings_host = QWidget(self._tool_settings_bar)
+        # so the toolbar never reflows when tools switch. Wrapped in a
+        # horizontal QScrollArea so wide tool widgets scroll instead of
+        # pushing the toolbar off-screen on narrow windows.
+        from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QScrollArea
+        self._tool_settings_host = QWidget()
         host_layout = QHBoxLayout(self._tool_settings_host)
         host_layout.setContentsMargins(4, 0, 4, 0)
         host_layout.setSpacing(6)
         host_layout.addStretch(1)
         self._tool_settings_host.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
         self._tool_settings_host.setFixedHeight(32)
-        self._tool_settings_bar.addWidget(self._tool_settings_host)
-        self._tool_settings_bar.setFixedHeight(40)
+
+        self._tool_settings_scroll = QScrollArea(self._tool_settings_bar)
+        self._tool_settings_scroll.setWidget(self._tool_settings_host)
+        self._tool_settings_scroll.setWidgetResizable(True)
+        self._tool_settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._tool_settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._tool_settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._tool_settings_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._tool_settings_scroll.setFixedHeight(46)
+        self._tool_settings_bar.addWidget(self._tool_settings_scroll)
+        self._tool_settings_bar.setFixedHeight(52)
         self._tool_settings_widget: Optional[QWidget] = None
 
         self._tool_settings_bar.topLevelChanged.connect(lambda *_: self._schedule_layout_save())
@@ -305,6 +319,7 @@ class MainWindow(QMainWindow):
         self._default_state = self.saveState()
         self._default_geometry = self.saveGeometry()
         self._restore_layout()
+        self._install_hud_picker()
         self.log.info("Main window initialized: %dx%d", width, height)
         # Defer plugin discovery + import so the window is visible before
         # importlib overhead runs (biggest contributor to slow cold start).
@@ -313,12 +328,45 @@ class MainWindow(QMainWindow):
             self._splash.set_progress(78, "Discovering plugins...")
         QTimer.singleShot(0, self._deferred_plugin_init)
 
+    def _install_hud_picker(self) -> None:
+        from PyQt6.QtGui import QShortcut
+        from .ui.hud_picker import HudPicker
+        self._hud = HudPicker(self)
+        sc = QShortcut(QKeySequence("Shift+S"), self)
+        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        sc.activated.connect(self._hud.toggle_at_cursor)
+
     def _deferred_plugin_init(self) -> None:
         """Load plugins on the first idle tick so the window paints first."""
+        if getattr(self, "_pending_session_restore", False):
+            self._pending_session_restore = False
+            if self._splash:
+                self._splash.set_progress(80, "Restoring session...")
+            try:
+                restored = load_session(SESSION_DIR)
+            except Exception as exc:
+                self.log.warning("session restore failed: %s", exc)
+                restored = []
+            if restored:
+                self.projects = restored
+                self.active_project = 0
+                self._bind_current()
+                self._refresh_tabs()
+                self.log.info("Restored %d project(s) from session", len(restored))
         if self._splash:
             self._splash.set_progress(82, "Importing plugin modules...")
+        qapp = QApplication.instance()
+
+        def _on_plugin_progress(i: int, total: int, name: str) -> None:
+            if self._splash and total > 0:
+                pct = 82 + int((i / total) * 6)
+                self._splash.set_progress(pct, f"Loading {name}...")
+            if qapp is not None:
+                qapp.processEvents()
+
         self.plugins = load_plugins(
-            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas, host=self
+            PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas,
+            host=self, on_progress=_on_plugin_progress,
         )
         if self._splash:
             n = len(self.plugins.tools) + len(self.plugins.filters) + len(self.plugins.actions)
@@ -329,6 +377,7 @@ class MainWindow(QMainWindow):
             if tid:
                 self.tool_panel.register_tool_id(tid, name)
             self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
+            self.tool_panel.set_tool_shortcut(name, getattr(tool, "shortcut", ""))
             self.tool_panel.add_tool_button(name)
 
         if self._splash:
@@ -346,6 +395,8 @@ class MainWindow(QMainWindow):
             if tid:
                 self.tool_panel.register_tool_id(tid, name)
             self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
+            self.tool_panel.set_tool_shortcut(name, getattr(tool, "shortcut", ""))
+            self.tool_panel.add_tool_button(name)
         if brush_cats:
             self.tool_panel.set_tool_categories(brush_cats)
 
@@ -439,6 +490,11 @@ class MainWindow(QMainWindow):
     def _restore_layout(self) -> None:
         geom = self._settings.value("window/geometry")
         state = self._settings.value("window/state")
+        # No per-user layout yet → fall back to the bundled default so a
+        # fresh install (or another user receiving the build) opens with
+        # the dev-curated panel arrangement.
+        if geom is None and state is None:
+            geom, state = self._read_default_layout_file()
         if geom is not None:
             self.restoreGeometry(geom)
         if state is not None:
@@ -447,6 +503,42 @@ class MainWindow(QMainWindow):
     def _save_layout(self) -> None:
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
+
+    # ------------------------------------------------------------------
+    # Default-layout file (shipped with the build)
+    # ------------------------------------------------------------------
+    def _read_default_layout_file(self):
+        p = DEFAULT_LAYOUT_FILE
+        if not p.exists():
+            return None, None
+        try:
+            data = p.read_bytes()
+            if len(data) < 8:
+                return None, None
+            glen = struct.unpack_from("<I", data, 0)[0]
+            geom = data[4:4 + glen]
+            slen = struct.unpack_from("<I", data, 4 + glen)[0]
+            state = data[8 + glen:8 + glen + slen]
+            return QByteArray(geom), QByteArray(state)
+        except Exception as e:
+            self.log.warning("Read default layout failed: %s", e)
+            return None, None
+
+    def _write_default_layout_file(self) -> None:
+        p = DEFAULT_LAYOUT_FILE
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            geom  = bytes(self.saveGeometry())
+            state = bytes(self.saveState())
+            with open(p, "wb") as f:
+                f.write(struct.pack("<I", len(geom)))
+                f.write(geom)
+                f.write(struct.pack("<I", len(state)))
+                f.write(state)
+            self.statusBar().showMessage(f"Default layout saved → {p}")
+        except Exception as e:
+            self.log.warning("Write default layout failed: %s", e)
+            self.statusBar().showMessage("Failed to save default layout")
 
     def _save_tool_order(self, order: list) -> None:
         # Persist by tool_id so saved order survives display-name renames.
@@ -475,8 +567,15 @@ class MainWindow(QMainWindow):
         self.tool_panel.set_tool_order(order)
 
     def _reset_layout(self) -> None:
-        self.restoreGeometry(self._default_geometry)
-        self.restoreState(self._default_state)
+        # Prefer the bundled default file so "Reset" reverts to the
+        # dev-curated layout instead of the bare construction state.
+        geom, state = self._read_default_layout_file()
+        if geom is None:
+            geom = self._default_geometry
+        if state is None:
+            state = self._default_state
+        self.restoreGeometry(geom)
+        self.restoreState(state)
         for dock in self._docks.values():
             dock.show()
         self._tool_settings_bar.show()
@@ -636,6 +735,9 @@ class MainWindow(QMainWindow):
         panels_menu.addAction(settings_bar_act)
         view_menu.addSeparator()
         view_menu.addAction(self._act("Reset Layout", self._reset_layout))
+        view_menu.addAction(self._act(
+            "Save Current Layout as Default…", self._write_default_layout_file
+        ))
 
         filter_menu = mb.addMenu("F&ilters")
         if not self.plugins.filters:
@@ -688,7 +790,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is None:
             return
-        palette = app.style().standardPalette()
+        palette = QPalette(app.palette())
         c = QColor(hex_color)
         if not c.isValid():
             return
@@ -2116,6 +2218,7 @@ class MainWindow(QMainWindow):
                 if tid:
                     self.tool_panel.register_tool_id(tid, name)
                 self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
+                self.tool_panel.set_tool_shortcut(name, getattr(tool, "shortcut", ""))
                 self.tool_panel.add_tool_button(name)
 
             # Re-load all brush tools from Plugins/Brushes/ so added,
@@ -2132,6 +2235,8 @@ class MainWindow(QMainWindow):
                 if tid:
                     self.tool_panel.register_tool_id(tid, name)
                 self.tool_panel.set_tool_icon(name, getattr(tool, "icon", ""))
+                self.tool_panel.set_tool_shortcut(name, getattr(tool, "shortcut", ""))
+                self.tool_panel.add_tool_button(name)
             if brush_cats:
                 self.tool_panel.set_tool_categories(brush_cats)
 

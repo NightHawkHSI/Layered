@@ -127,6 +127,10 @@ if exist "%ROOT%\docs" (
     echo    %B%-%N% Syncing: %Y%docs%N%
     robocopy "%ROOT%\docs" "%RELEASE%\docs" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
 )
+if exist "%ROOT%\assets" (
+    echo    %B%-%N% Syncing: %Y%assets%N%
+    robocopy "%ROOT%\assets" "%RELEASE%\assets" *.* /MIR /NFL /NDL /NJH /NJS /NP /XD "__pycache__" /XF "*.pyc" "*.pyo" >> "%LOGFILE%" 2>&1
+)
 
 call :stage 100 "Cleaning Up"
 if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"

@@ -1,16 +1,7 @@
-"""
-Bottom project switcher: tabs with close + save buttons per project.
-Features: 
-- Smooth scrolling
-- Dynamic QSS styling (Dark Mode)
-- Optimized 'active' state switching without UI rebuilding
-- Thumbnail support
-"""
 from __future__ import annotations
-
 from typing import Optional, List
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap, QColor
+from PyQt6.QtGui import QIcon, QPixmap, QFontMetrics, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -20,6 +11,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QFrame,
+    QLabel
 )
 
 # Professional Dark Theme Stylesheet
@@ -36,11 +28,9 @@ _ProjectTab[active="true"] {
 _ProjectTab:hover {
     border: 1px solid #555555;
 }
-_ProjectTab[active="true"]:hover {
-    border: 1px solid #0098ff;
-}
 
-QPushButton#select_btn {
+/* The name button */
+#select_btn {
     text-align: left;
     padding: 8px;
     border: none;
@@ -49,23 +39,24 @@ QPushButton#select_btn {
     font-size: 13px;
     font-weight: 500;
 }
-_ProjectTab[active="true"] QPushButton#select_btn {
+_ProjectTab[active="true"] #select_btn {
     color: #ffffff;
     font-weight: bold;
 }
 
-QPushButton#action_btn {
+/* Action buttons (Save/Close) */
+QPushButton.action_btn {
     border: none;
     background: transparent;
     color: #888888;
     font-size: 14px;
     border-radius: 3px;
 }
-QPushButton#action_btn:hover {
+QPushButton.action_btn:hover {
     background-color: #444444;
     color: #ffffff;
 }
-QPushButton#close_btn:hover {
+#close_btn:hover {
     background-color: #c42b1c;
     color: white;
 }
@@ -77,12 +68,10 @@ QPushButton#new_btn {
     border-radius: 4px;
     font-weight: bold;
     padding: 8px;
+    margin-bottom: 5px;
 }
 QPushButton#new_btn:hover {
     background-color: #0098ff;
-}
-QPushButton#new_btn:pressed {
-    background-color: #005a9e;
 }
 
 QScrollArea {
@@ -90,6 +79,35 @@ QScrollArea {
     background: transparent;
 }
 """
+
+class ElidedButton(QPushButton):
+    """A button that automatically elides text (adds ...) if the text is too long."""
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+
+    def setText(self, text):
+        self._full_text = text
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, event):
+        # We calculate the elided text right before drawing
+        painter = QPainter(self)
+        metrics = QFontMetrics(self.font())
+        
+        # Calculate available width (total width - padding/icon space)
+        icon_width = self.iconSize().width() + 10 if not self.icon().isNull() else 0
+        available_width = self.width() - icon_width - 20 # 20 for padding
+        
+        elided = metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
+        
+        # Temporarily swap text to draw, then swap back (or just use drawText)
+        # However, for QPushButton, it's easier to set the internal text
+        if elided != self.text():
+            super().setText(elided)
+        
+        super().paintEvent(event)
 
 class _ProjectTab(QFrame):
     """Internal widget representing a single project row."""
@@ -105,16 +123,15 @@ class _ProjectTab(QFrame):
         self.setProperty("active", active)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(2)
 
-        # Main selection button (Label + Thumbnail)
-        self.select_btn = QPushButton(label)
+        # Elided Name Button
+        self.select_btn = ElidedButton(label)
         self.select_btn.setObjectName("select_btn")
-        self.select_btn.setCheckable(True)
-        self.select_btn.setChecked(active)
         self.select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.select_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # This allows the button to shrink as small as needed
+        self.select_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         
         if thumbnail and not thumbnail.isNull():
             self.select_btn.setIcon(QIcon(thumbnail))
@@ -122,42 +139,34 @@ class _ProjectTab(QFrame):
         
         # Save Button
         self.save_btn = QPushButton("💾")
-        self.save_btn.setObjectName("action_btn")
+        self.save_btn.setProperty("class", "action_btn")
         self.save_btn.setFixedSize(28, 28)
         self.save_btn.setToolTip("Save Project")
 
-        # Close Button
+        # Close/Delete Button
         self.close_btn = QPushButton("✕")
-        self.close_btn.setObjectName("close_btn") # Specialized hover color
+        self.close_btn.setObjectName("close_btn")
         self.close_btn.setProperty("class", "action_btn") 
-        # Note: we use both objectName and class for CSS flexibility
         self.close_btn.setFixedSize(28, 28)
         self.close_btn.setToolTip("Close Project")
-        # Apply the general action_btn style manually since we changed ObjectName
-        self.close_btn.setStyleSheet("QPushButton { border: none; background: transparent; color: #888888; border-radius: 3px; }")
 
-        layout.addWidget(self.select_btn)
+        layout.addWidget(self.select_btn, stretch=1) # Name takes all available space
         layout.addWidget(self.save_btn)
         layout.addWidget(self.close_btn)
 
-        # Wire signals (using captured index to ensure correctness)
         self.select_btn.clicked.connect(lambda: self.activated.emit(self.index))
         self.save_btn.clicked.connect(lambda: self.saved.emit(self.index))
         self.close_btn.clicked.connect(lambda: self.closed.emit(self.index))
 
     def set_active(self, is_active: bool):
-        """Updates the visual state without rebuilding the widget."""
         if self.property("active") == is_active:
             return
         self.setProperty("active", is_active)
-        self.select_btn.setChecked(is_active)
-        # Refresh stylesheet properties
         self.style().unpolish(self)
         self.style().polish(self)
 
 
 class ProjectTabs(QWidget):
-    """The main sidebar/bottom bar project switcher."""
     project_activated = pyqtSignal(int)
     project_closed = pyqtSignal(int)
     project_saved = pyqtSignal(int)
@@ -168,49 +177,39 @@ class ProjectTabs(QWidget):
         self.setStyleSheet(TAB_STYLE)
         self._tabs: List[_ProjectTab] = []
 
-        # Outer Layout
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(5, 5, 5, 5)
-        self.main_layout.setSpacing(8)
+        self.main_layout.setSpacing(2)
 
-        # "New Project" Button
         self.new_btn = QPushButton("+ New Project")
         self.new_btn.setObjectName("new_btn")
         self.new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.new_btn.clicked.connect(self.new_requested.emit)
         
-        # Scroll Area Setup
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_layout.setContentsMargins(0, 0, 2, 0)
+        self.scroll_layout.setContentsMargins(0, 0, 5, 0)
         self.scroll_layout.setSpacing(4)
-        self.scroll_layout.addStretch(1) # Keeps items at the top
+        self.scroll_layout.addStretch(1) 
         
         self.scroll.setWidget(self.scroll_content)
-
         self.main_layout.addWidget(self.new_btn)
         self.main_layout.addWidget(self.scroll)
 
     def set_projects(self, labels: list[str], active_index: int,
                      thumbnails: Optional[list[QPixmap]] = None) -> None:
-        """
-        Clears and rebuilds the project list. 
-        Use this when projects are added or removed.
-        """
-        # Clean up existing widgets
-        while self.scroll_layout.count() > 1: # Keep the stretch
-            item = self.scroll_layout.takeAt(0)
-            if widget := item.widget():
-                widget.deleteLater()
-        self._tabs = []
+        # Clear existing
+        for tab in self._tabs:
+            tab.setParent(None)
+            tab.deleteLater()
+        self._tabs.clear()
 
-        # Build new tabs
+        # Rebuild
         for i, label in enumerate(labels):
             thumb = thumbnails[i] if thumbnails and i < len(thumbnails) else None
             tab = _ProjectTab(i, label, i == active_index, thumbnail=thumb)
@@ -219,58 +218,56 @@ class ProjectTabs(QWidget):
             tab.closed.connect(self.project_closed.emit)
             tab.saved.connect(self.project_saved.emit)
             
-            # Insert before the stretch at the bottom
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, tab)
             self._tabs.append(tab)
 
     def set_active_index(self, active_index: int):
-        """
-        Efficiently updates which tab is highlighted.
-        Does not rebuild the list, so it's safe to call frequently.
-        """
         for i, tab in enumerate(self._tabs):
             tab.set_active(i == active_index)
 
 
-# --- Example Usage / Demo ---
+# --- Demo logic ---
 if __name__ == "__main__":
     import sys
 
     app = QApplication(sys.argv)
     
-    # Create main window container
     window = QWidget()
-    window.setWindowTitle("Project Switcher Demo")
-    window.resize(300, 500)
-    window.setStyleSheet("background-color: #1e1e1e;") # Dark background for the app
+    window.setWindowTitle("Fixed Sidebar Demo")
+    window.resize(250, 400) # Narrow width to test shrinking
+    window.setStyleSheet("background-color: #1e1e1e;")
 
     layout = QVBoxLayout(window)
-    
-    # Initialize the component
     tabs_widget = ProjectTabs()
     layout.addWidget(tabs_widget)
 
-    # Mock Data
-    project_list = ["Logo Design", "Website UI", "Video Edit", "Mobile App"]
-    
-    def on_project_activated(idx):
-        print(f"Switching to: {project_list[idx]}")
+    # State
+    projects = ["Logo Design", "A Very Long Project Name That Might Break UI", "Web UI", "Video"]
+    current_idx = 0
+
+    def refresh():
+        tabs_widget.set_projects(projects, current_idx)
+
+    def on_activate(idx):
+        global current_idx
+        current_idx = idx
         tabs_widget.set_active_index(idx)
 
+    def on_close(idx):
+        global current_idx
+        if len(projects) > 1:
+            projects.pop(idx)
+            current_idx = min(current_idx, len(projects) - 1)
+            refresh()
+
     def on_new():
-        name = f"Project {len(project_list) + 1}"
-        project_list.append(name)
-        tabs_widget.set_projects(project_list, len(project_list)-1)
-        print(f"Created: {name}")
+        projects.append(f"New Project {len(projects)+1}")
+        refresh()
 
-    # Initial Population
-    tabs_widget.set_projects(project_list, 0)
-
-    # Connect signals
-    tabs_widget.project_activated.connect(on_project_activated)
+    tabs_widget.project_activated.connect(on_activate)
+    tabs_widget.project_closed.connect(on_close)
     tabs_widget.new_requested.connect(on_new)
-    tabs_widget.project_closed.connect(lambda i: print(f"Closing {i}"))
-    tabs_widget.project_saved.connect(lambda i: print(f"Saving {i}"))
 
+    refresh()
     window.show()
     sys.exit(app.exec())

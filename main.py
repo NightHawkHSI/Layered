@@ -25,13 +25,118 @@ def _emergency_crash(exc_type, exc_value, exc_tb) -> Path:
     return path
 
 
+def _apply_dark_palette(app) -> None:
+    """Install a modern dark Fusion palette + base QSS.
+
+    Palette is set as the application palette so child widgets inherit dark
+    colors. _apply_accent (in main_window) tweaks Highlight on top of this.
+    """
+    from PyQt6.QtGui import QColor, QPalette
+
+    bg        = QColor(30, 31, 34)      # window background
+    base      = QColor(24, 25, 28)      # text input / list bg
+    alt_base  = QColor(36, 38, 42)      # alternating row
+    surface   = QColor(43, 45, 49)      # buttons, panels
+    border    = QColor(60, 63, 68)
+    text      = QColor(220, 221, 222)
+    text_dim  = QColor(150, 151, 152)
+    highlight = QColor(74, 144, 226)    # default accent — overridden by prefs
+
+    p = QPalette()
+    p.setColor(QPalette.ColorRole.Window, bg)
+    p.setColor(QPalette.ColorRole.WindowText, text)
+    p.setColor(QPalette.ColorRole.Base, base)
+    p.setColor(QPalette.ColorRole.AlternateBase, alt_base)
+    p.setColor(QPalette.ColorRole.ToolTipBase, surface)
+    p.setColor(QPalette.ColorRole.ToolTipText, text)
+    p.setColor(QPalette.ColorRole.Text, text)
+    p.setColor(QPalette.ColorRole.PlaceholderText, text_dim)
+    p.setColor(QPalette.ColorRole.Button, surface)
+    p.setColor(QPalette.ColorRole.ButtonText, text)
+    p.setColor(QPalette.ColorRole.BrightText, QColor(255, 80, 80))
+    p.setColor(QPalette.ColorRole.Highlight, highlight)
+    p.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    p.setColor(QPalette.ColorRole.Link, highlight)
+    p.setColor(QPalette.ColorRole.LinkVisited, QColor(180, 140, 220))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, text_dim)
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, text_dim)
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, text_dim)
+    app.setPalette(p)
+
+    app.setStyleSheet(
+        f"""
+        QToolTip {{
+            color: {text.name()}; background-color: {surface.name()};
+            border: 1px solid {border.name()}; padding: 3px 6px;
+        }}
+        QMenu {{
+            background-color: {surface.name()};
+            border: 1px solid {border.name()};
+        }}
+        QMenu::item:selected {{
+            background-color: {highlight.name()};
+            color: white;
+        }}
+        QMenuBar {{ background-color: {bg.name()}; }}
+        QMenuBar::item:selected {{ background-color: {surface.name()}; }}
+        QStatusBar {{ background-color: {bg.name()}; }}
+        QToolBar {{
+            background-color: {bg.name()};
+            border: none; spacing: 2px;
+        }}
+        QDockWidget::title {{
+            background: {surface.name()};
+            padding: 4px 8px;
+            border-bottom: 1px solid {border.name()};
+        }}
+        QSplitter::handle {{ background: {border.name()}; }}
+        QHeaderView::section {{
+            background: {surface.name()};
+            color: {text.name()};
+            border: 1px solid {border.name()};
+            padding: 4px;
+        }}
+        QTabBar::tab {{
+            background: {bg.name()}; color: {text.name()};
+            padding: 6px 12px;
+            border: 1px solid {border.name()};
+            border-bottom: none;
+        }}
+        QTabBar::tab:selected {{ background: {surface.name()}; }}
+        QScrollBar:vertical, QScrollBar:horizontal {{
+            background: {bg.name()}; border: none;
+        }}
+        QScrollBar::handle {{
+            background: {surface.name()}; border-radius: 4px;
+        }}
+        QScrollBar::handle:hover {{ background: {border.name()}; }}
+        """
+    )
+
+
+def _resolve_icon_paths() -> tuple[Path, Path]:
+    """Locate icon files without importing app.main_window (heavy)."""
+    if getattr(sys, "frozen", False):
+        project_dir = Path(sys.executable).resolve().parent
+        resource_dir = Path(getattr(sys, "_MEIPASS", project_dir))
+    else:
+        project_dir = Path(__file__).resolve().parent
+        resource_dir = project_dir
+    ico = resource_dir / "Icon.ico"
+    if not ico.exists():
+        ico = project_dir / "Icon.ico"
+    png = resource_dir / "Icon.png"
+    if not png.exists():
+        png = project_dir / "Icon.png"
+    return ico, png
+
+
 def main() -> int:
     try:
         from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
 
         from app.logger import get_logger, install_excepthook
-        from app.main_window import ICON_PATH, ICON_PNG_PATH, MainWindow
         try:
             from app.splash import SplashScreen
         except Exception:
@@ -53,11 +158,13 @@ def main() -> int:
     log.info("Layered starting up")
 
     app = QApplication(sys.argv)
-    # Fusion gives consistent, crisp dock drop indicators across platforms
-    # so dragging a panel shows VSCode-style snap zones reliably.
     app.setStyle("Fusion")
     app.setApplicationName("Layered")
     app.setOrganizationName("Layered")
+
+    _apply_dark_palette(app)
+
+    ICON_PATH, ICON_PNG_PATH = _resolve_icon_paths()
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     elif ICON_PNG_PATH.exists():
@@ -69,9 +176,14 @@ def main() -> int:
         splash.show()
         splash.set_progress(3, "Initializing Qt runtime...")
         app.processEvents()
-        splash.set_progress(8, "Preparing workspace...")
+        splash.set_progress(8, "Loading modules...")
+        app.processEvents()
 
     try:
+        from app.main_window import MainWindow
+        if splash is not None:
+            splash.set_progress(15, "Preparing workspace...")
+            app.processEvents()
         window = MainWindow(splash=splash)
         if splash is not None:
             splash.set_progress(100, "Ready — welcome back")

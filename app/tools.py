@@ -261,6 +261,7 @@ class Tool:
     group: str = ""           # set by tool_loader from the parent folder name
     role: str = ""            # semantic role; see above
     icon: str = ""            # optional glyph shown on the tool button
+    shortcut: str = ""        # optional QKeySequence string (e.g. "B", "Shift+E")
     is_default: bool = False
     commit_on: Optional[str] = "release"   # "press" | "release" | None
 
@@ -477,7 +478,10 @@ def _walk(p0: Tuple[int, int], p1: Tuple[int, int], spacing: float):
 # ---------------------------------------------------------------------------
 
 def build_brush_settings_ui(tool, parent, fields=("size", "hardness", "opacity", "spacing")):
-    """Build a standard settings QWidget for a brush-style tool.
+    """Build a compact horizontal settings QWidget for a brush-style tool.
+
+    Designed for the per-tool settings toolbar (32px host). Each field
+    becomes an inline `Label: control` pair on a single row.
 
     ``tool`` must have attributes matching the requested ``fields``:
       - brush_size       (int)
@@ -491,48 +495,67 @@ def build_brush_settings_ui(tool, parent, fields=("size", "hardness", "opacity",
     """
     if not fields:
         return None
-    from PyQt6.QtWidgets import QFormLayout, QSpinBox, QWidget
+    from PyQt6.QtWidgets import (
+        QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QSpinBox, QWidget,
+    )
     try:
         from .ui.slider_field import SliderField
     except Exception:
         from app.ui.slider_field import SliderField
 
     w = QWidget(parent)
-    layout = QFormLayout(w)
-    layout.setContentsMargins(4, 4, 4, 4)
+    w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    w.setFixedHeight(28)
+    row = QHBoxLayout(w)
+    row.setContentsMargins(4, 0, 4, 0)
+    row.setSpacing(8)
+
+    def _add(label_text: str, ctl: QWidget, stretch: int = 0) -> None:
+        lab = QLabel(label_text)
+        lab.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        row.addWidget(lab)
+        if stretch:
+            row.addWidget(ctl, stretch)
+        else:
+            row.addWidget(ctl)
 
     if "size" in fields:
         spin = QSpinBox()
         spin.setRange(1, 1024)
         spin.setValue(int(getattr(tool, "brush_size", 20)))
+        spin.setFixedWidth(64)
         spin.valueChanged.connect(lambda v: setattr(tool, "brush_size", v))
-        layout.addRow("Size:", spin)
+        _add("Size", spin)
 
     if "hardness" in fields:
         sf = SliderField(0, 100, int(getattr(tool, "brush_hardness", 0.8) * 100), suffix="%")
+        sf.setMinimumWidth(110)
         sf.valueChanged.connect(lambda v: setattr(tool, "brush_hardness", v / 100.0))
-        layout.addRow("Hardness:", sf)
+        _add("Hardness", sf, stretch=1)
 
     if "opacity" in fields:
         sf = SliderField(1, 100, int(getattr(tool, "brush_opacity", 1.0) * 100), suffix="%")
+        sf.setMinimumWidth(110)
         sf.valueChanged.connect(lambda v: setattr(tool, "brush_opacity", v / 100.0))
-        layout.addRow("Opacity:", sf)
+        _add("Opacity", sf, stretch=1)
 
     if "spacing" in fields:
         sf = SliderField(1, 200, int(getattr(tool, "brush_spacing", 0.05) * 100), suffix="%")
+        sf.setMinimumWidth(110)
         sf.valueChanged.connect(lambda v: setattr(tool, "brush_spacing", v / 100.0))
-        layout.addRow("Spacing:", sf)
+        _add("Spacing", sf, stretch=1)
 
     if "tolerance" in fields:
         sf = SliderField(0, 255, int(getattr(tool, "tolerance", 32)))
+        sf.setMinimumWidth(110)
         sf.valueChanged.connect(lambda v: setattr(tool, "tolerance", int(v)))
-        layout.addRow("Tolerance:", sf)
+        _add("Tolerance", sf, stretch=1)
 
     if "fill_shape" in fields:
-        from PyQt6.QtWidgets import QCheckBox
-        cb = QCheckBox("Fill shape")
+        cb = QCheckBox("Fill")
         cb.setChecked(bool(getattr(tool, "fill_shape", False)))
         cb.toggled.connect(lambda v: setattr(tool, "fill_shape", bool(v)))
-        layout.addRow(cb)
+        row.addWidget(cb)
 
+    row.addStretch(1)
     return w

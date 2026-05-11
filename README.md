@@ -25,6 +25,7 @@
 [![Bug Report](https://img.shields.io/badge/🐞%20%20Report%20a%20Bug-Open%20Issue-ef4444?style=for-the-badge&labelColor=7f1d1d)](https://github.com/NightHawkHSI/Layered/issues/new?labels=bug)
 [![Feature Request](https://img.shields.io/badge/💡%20%20Request%20Feature-Open%20Issue-3b82f6?style=for-the-badge&labelColor=1e3a5f)](https://github.com/NightHawkHSI/Layered/issues/new?labels=enhancement)
 [![Plugin Docs](https://img.shields.io/badge/🔌%20%20Plugin%20API-Read%20Docs-a855f7?style=for-the-badge&labelColor=3b0764)](docs/PLUGIN_API.md)
+[![Brush Docs](https://img.shields.io/badge/🖌%20%20Build%20a%20Brush-Read%20Guide-f59e0b?style=for-the-badge&labelColor=78350f)](docs/build_brush.md)
 
 <br/>
 
@@ -206,25 +207,16 @@ Layered/
 │
 ├── 📁 Plugins/                   # ← Drop your plugins here
 │   ├── Brushes/                  #   Tool plugins, grouped by folder
-│   │   ├── <Group>/              #   Group becomes a split-button in the Tools dock
-│   │   │   └── <Tool>/
-│   │   │       ├── tool.py       #   Required — defines TOOL_CLASS = MyTool
-│   │   │       └── tool.json     #   Optional manifest (display name, category override)
-│   │   ├── Paint/                #   Brush · Eraser · Fill · Gradient
-│   │   ├── Draw/                 #   Line · Rectangle · Ellipse
-│   │   ├── Shapes/               #   Triangle · Star · Pentagon · Diamond · Hexagon
-│   │   ├── Lines/                #   Arrow · Curve · Dashed Line
-│   │   ├── Custom Brushes/       #   Spray · Square Brush · Scatter  ← drag & drop here
-│   │   ├── Select/               #   Lasso · Marquee · Magic Wand · Sel Transform
-│   │   ├── Effects/              #   Blur · Sharpen · Smudge · Clone Stamp
-│   │   ├── Transform/            #   Move · Transform
-│   │   ├── Text/                 #   Text
-│   │   └── Utility/              #   Picker
+│   │   ├── _shared.py            #   One-stop import for every brush
+│   │   └── <Category>/<Tool>/    #   Each tool is a folder
+│   │       ├── tool.py           #   Required — defines TOOL_CLASS = MyTool
+│   │       └── tool.json         #   Optional — display name, id, icon, category override
 │   └── *.py                      #   Filter / action plugins (flat .py files)
 │
 ├── 📁 Brushes/                   # ← Brush presets (size/hardness/opacity/...)
 ├── 📁 docs/
-│   └── PLUGIN_API.md             # Full plugin API reference
+│   ├── PLUGIN_API.md             # Full plugin API reference
+│   └── build_brush.md            # How to build a brush (folder layout, lifecycle, helpers)
 └── 📁 logs/                      # Generated at runtime
 ```
 
@@ -282,83 +274,54 @@ Tools and brush presets live in two separate trees:
 { "name": "Marker", "icon": "🖊", "size": 20, "hardness": 0.95, "opacity": 1.0, "spacing": 0.05 }
 ```
 
-### Drag-and-drop custom tools
-
-The `Plugins/Brushes/Custom Brushes/` folder is designed for user-created tools — just **drag a new folder in** and it appears in the tool panel on next launch. No registration, no config.
-
-```
-Plugins/Brushes/
-└── Custom Brushes/          ← drop your tool folder here
-    ├── Spray/
-    │   └── tool.py
-    ├── Square Brush/
-    │   └── tool.py
-    ├── Scatter/
-    │   └── tool.py
-    └── YourTool/            ← copy this pattern
-        └── tool.py          ← only file required
-```
-
-See `Plugins/Brushes/Custom Brushes/HOW_TO_ADD_TOOLS.md` for a full walkthrough with copy-paste templates for both simple tools and shape tools with resize handles.
-
 ### Adding a custom tool
 
+Every brush is a folder under `Plugins/Brushes/<Category>/<ToolName>/` with a
+`tool.py` (and optional `tool.json`). Each `Tool` subclass declares its own
+`icon`, `shortcut`, and `build_ui()` — settings render in the per-tool
+settings toolbar at the top of the window.
+
 ```python
-# Plugins/Brushes/Paint/Marker/tool.py
-from app.tools import Tool
-from app.layer import Layer
+# Plugins/Brushes/Basic/Brush/tool.py
+import importlib.util as _iu, sys as _sys
+from pathlib import Path as _P
+_KEY = "_layered_brushes_shared"
+if _KEY not in _sys.modules:
+    _spec = _iu.spec_from_file_location(_KEY, _P(__file__).resolve().parents[2] / "_shared.py")
+    _mod = _iu.module_from_spec(_spec); _sys.modules[_KEY] = _mod; _spec.loader.exec_module(_mod)
+_sh = _sys.modules[_KEY]
+
+Tool = _sh.Tool; Layer = _sh.Layer
+build_brush_settings_ui = _sh.build_brush_settings_ui
 
 
-class MarkerTool(Tool):
-    name      = "Marker"
-    commit_on = "release"   # "press" | "release" | None
-    is_default = False       # set True to make this the boot-time active tool
+class BrushTool(Tool):
+    name, tool_id = "Brush", "brush"
+    icon, shortcut = "🖌", "B"
+    is_default = True
 
-    def press(self, layer: Layer, x: int, y: int) -> None:
-        pass   # called on mouse button down
-
-    def move(self, layer: Layer, x: int, y: int) -> None:
-        pass   # called while mouse is held and dragging
-
-    def release(self, layer: Layer, x: int, y: int) -> None:
-        super().release(layer, x, y)   # required — commits the stroke
-
-    def on_select(self, ctx) -> None:
-        pass   # called when this tool becomes active
-
-    def on_deselect(self, ctx) -> None:
-        pass   # called just before another tool takes over
+    def __init__(self, ctx=None):
+        super().__init__(ctx)
+        self.brush_size, self.brush_hardness, self.brush_opacity = 20, 0.8, 1.0
 
     def build_ui(self, parent, ctx):
-        """Return a QWidget hosted in the tool-settings toolbar.
-        Return None if the tool needs no settings UI."""
-        return None
+        return build_brush_settings_ui(self, parent,
+            fields=("size", "hardness", "opacity"))
+
+    def press(self, layer, x, y):   ...
+    def move(self, layer, x, y):    ...
+    def release(self, layer, x, y): self._last_pt = None
 
 
-TOOL_CLASS = MarkerTool
+TOOL_CLASS = BrushTool
 ```
 
-Optional `tool.json` lets a tool override its display name or category:
+`Plugins/Brushes/_shared.py` re-exports stdlib, PIL, PyQt6, painting helpers,
+`SliderField`, `build_brush_settings_ui`, and the `Tool`/`Layer`/`ToolPhase`
+bases — one import covers every brush.
 
-```json
-{ "name": "✏️ Marker", "category": "Paint" }
-```
-
-Discovery is automatic on launch — no registration code, no menu wiring. The folder structure builds the UI:
-
-```
-Plugins/Brushes/
-├── Paint/          →  [ Paint ▼ ]          Brush · Eraser · Fill · Gradient
-├── Draw/           →  [ Draw ▼ ]           Line · Rectangle · Ellipse
-├── Shapes/         →  [ Shapes ▼ ]         Triangle · Star · Pentagon · Diamond · Hexagon
-├── Lines/          →  [ Lines ▼ ]          Arrow · Curve · Dashed Line
-├── Custom Brushes/ →  [ Custom Brushes ▼ ] Spray · Square Brush · Scatter
-├── Select/         →  [ Select ▼ ]         Lasso · Marquee · Magic Wand · Sel Transform
-├── Effects/        →  [ Effects ▼ ]        Blur · Sharpen · Smudge · Clone Stamp
-├── Transform/      →  [ Transform ▼ ]      Move · Transform
-├── Text/           →  [ Text ▼ ]           Text
-└── Utility/        →  [ Utility ▼ ]        Picker
-```
+📘 Full guide with class-attr reference, lifecycle methods, painting helpers,
+and shape/selection bases: [`docs/build_brush.md`](docs/build_brush.md).
 
 ---
 
@@ -430,6 +393,7 @@ Distributed under the terms described in [LICENSE](LICENSE).
 <br/>
 
 [![Plugin API](https://img.shields.io/badge/🔌%20Plugin%20API-Docs-a855f7?style=flat-square&labelColor=1c1917)](docs/PLUGIN_API.md)
+[![Build a Brush](https://img.shields.io/badge/🖌%20Build%20a%20Brush-Guide-f59e0b?style=flat-square&labelColor=1c1917)](docs/build_brush.md)
 [![Issues](https://img.shields.io/badge/🐞%20Issues-Tracker-ef4444?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/issues)
 [![Releases](https://img.shields.io/badge/📦%20Releases-Changelog-22c55e?style=flat-square&labelColor=1c1917)](https://github.com/NightHawkHSI/Layered/releases)
 

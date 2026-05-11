@@ -35,6 +35,10 @@ class Canvas(QWidget):
         self.setMouseTracking(True)
         self.setMinimumSize(400, 300)
         self.setAcceptDrops(True)
+        # Suppress the QMainWindow default toolbar/dock toggle menu that
+        # would otherwise flash on right-click — right-click on the canvas
+        # is reserved for tool gestures (e.g. swap tool colors).
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         # Click-to-focus so Enter / Esc reach MainWindow.keyPressEvent
         # instead of being consumed by a still-focused QSpinBox/QLineEdit
         # (e.g. tolerance spin) — without that, Enter never confirms an

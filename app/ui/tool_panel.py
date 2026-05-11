@@ -1,755 +1,608 @@
-"""Tool panel: pick active tool + brush settings (size, hardness, opacity).
+"""Modern tool panel with large clickable tool cards, search, scrolling,
+group headers, and adaptive multi-column layout.
 
-Two layouts supported:
-  * "panel"   — vertical, suited for a side dock.
-  * "toolbar" — horizontal, suited for a top hot bar.
+Designed for plugin-heavy paint apps where hundreds of tools/brushes
+may exist without becoming difficult to browse.
 
-In toolbar mode, the host wires two `QToolBar`s — `populate_toolbar` fills
-the first row with tool buttons; `populate_settings_toolbar` fills the
-second row with the brush settings. `set_active_tool` then shows only the
-settings relevant to that tool, hiding the rest to cut visual noise.
+Features
+--------
+* Large icon-first tool cards
+* 4-column adaptive grid
+* Search filter
+* Scrollable tools area
+* Group sections
+* Active tool highlight
+* Keyboard shortcuts
+* Toolbar + dock support
+* Brush settings support
 """
+
 from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QButtonGroup,
+    QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QTextEdit,
+    QPlainTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QAbstractSpinBox,
 )
 
 from ..tools import Tool, ToolContext
 from .slider_field import SliderField
 
 
-# Which brush-settings each tool actually uses. Tools missing from the map
-# get no settings shown.
-# Icon glyph per tool — prefix text so the eye scans the row by shape, not
-# letter. Falls back to "" (no icon) when the tool is not listed.
-TOOL_ICONS: dict[str, str] = {
-    "Brush":         "🖌",
-    "Eraser":        "🩹",
-    "Blur":          "💧",
-    "Sharpen":       "🔪",
-    "Smudge":        "👆",
-    "Clone Stamp":   "🖇",
-    "Line":          "╱",
-    "Rectangle":     "▭",
-    "Ellipse":       "◯",
-    "Fill":          "🪣",
-    "Magic Wand":    "✨",
-    "Gradient":      "🌈",
-    "Text":          "🅰",
-    "Picker":        "💉",
-    "Move":          "✥",
-    "Transform":     "⛶",
-    "Marquee":       "⬚",
-    "Lasso":         "🪢",
-    "Sel Transform": "◫",
-    "Triangle":      "△",
-    "Star":          "★",
-    "Pentagon":      "⬠",
-    "Hexagon":       "⬡",
-    "Diamond":       "◇",
-    "Arrow":         "➤",
-    "Curve":         "∿",
-    "Dashed":        "┈",
+# -----------------------------------------------------------------------------
+# Styling
+# -----------------------------------------------------------------------------
 
-}
+_ACCENT = "#1a73e8"
+_ACCENT_BG = "rgba(26,115,232,0.15)"
+_HOVER_BG = "rgba(255,255,255,0.06)"
 
-# Photoshop-ish single-key shortcuts. ApplicationShortcut scope so the key
-# fires regardless of which dock has focus. Tools missing from the map get
-# no shortcut.
-TOOL_SHORTCUTS: dict[str, str] = {
-    "Brush":         "B",
-    "Eraser":        "E",
-    "Fill":          "G",
-    "Gradient":      "Shift+G",
-    "Picker":        "I",
-    "Move":          "V",
-    "Marquee":       "M",
-    "Lasso":         "L",
-    "Magic Wand":    "W",
-    "Text":          "T",
-    "Transform":     "Ctrl+T",
-    "Sel Transform": "Ctrl+Shift+T",
-    "Line":          "U",
-    "Rectangle":     "Shift+U",
-    "Ellipse":       "Alt+U",
-    "Blur":          "R",
-    "Sharpen":       "Shift+R",
-    "Smudge":        "Alt+R",
-    "Clone Stamp":   "S",
-}
+_COLUMNS = 3
 
-# Stylesheet for tool buttons. Bumps checked-state contrast so the active
-# tool reads at a glance and gives a hover hint for affordance.
-_TOOL_BTN_QSS = """
-QPushButton, QToolButton {
-    text-align: left;
-    padding: 4px 8px;
-}
-QPushButton:hover, QToolButton:hover {
-    background: rgba(255,255,255,0.08);
-}
-QPushButton:checked, QToolButton:checked {
-    background: #2a6ad6;
-    color: white;
-    border: 1px solid #4a8af0;
+_PANEL_QSS = f"""
+QPushButton[tool_btn="true"],
+QToolButton[tool_btn="true"] {{
+    border: none;
+    border-radius: 12px;
+
+    background: transparent;
+
+    padding: 8px;
+
+    text-align: center;
+
+    font-size: 11px;
+    font-weight: 500;
+}}
+
+QPushButton[tool_btn="true"]:hover,
+QToolButton[tool_btn="true"]:hover {{
+    background: {_HOVER_BG};
+}}
+
+QPushButton[tool_btn="true"]:checked,
+QToolButton[tool_btn="true"]:checked {{
+    background: {_ACCENT_BG};
+    color: {_ACCENT};
+    border: 1px solid rgba(26,115,232,0.35);
+}}
+
+QLineEdit#toolSearch {{
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(128,128,128,0.25);
+    font-size: 12px;
+}}
+
+QLabel#groupHeader {{
+    font-size: 10px;
     font-weight: bold;
-}
+    color: rgba(180,180,180,0.9);
+    padding: 6px 4px;
+    letter-spacing: 0.08em;
+}}
+
+QLabel#activeToolLabel {{
+    font-size: 12px;
+    font-weight: bold;
+    padding: 8px 10px;
+    color: {_ACCENT};
+    background: {_ACCENT_BG};
+    border-bottom: 1px solid rgba(128,128,128,0.2);
+}}
 """
 
 
-def _default_icon_for(name: str) -> str:
-    """Built-in fallback glyph. Custom brushes override this via set_tool_icon."""
-    return TOOL_ICONS.get(name, "")
+# -----------------------------------------------------------------------------
+# Tool icons / shortcuts
+# -----------------------------------------------------------------------------
+# These module-level dicts are kept ONLY for backwards compatibility with any
+# external code that still imports them; they are no longer the source of
+# truth. Each Tool subclass declares its own `icon` and `shortcut` class
+# attrs, which the host passes to ToolPanel via set_tool_icon() and
+# set_tool_shortcut() at registration time.
+
+TOOL_ICONS: dict[str, str] = {}
+TOOL_SHORTCUTS: dict[str, str] = {}
 
 
-TOOL_SETTINGS: dict[str, list[str]] = {
-    "Brush":           ["size", "hardness", "opacity", "spacing"],
-    "Eraser":          ["size", "hardness", "opacity", "spacing"],
-    "Blur":            ["size", "hardness", "opacity", "spacing"],
-    "Sharpen":         ["size", "hardness", "opacity", "spacing"],
-    "Smudge":          ["size", "hardness", "opacity", "spacing"],
-    "Clone Stamp":     ["size", "hardness", "opacity", "spacing"],
-    "Line":            ["size", "opacity"],
-    "Rectangle":       ["size", "opacity", "fill_shape"],
-    "Ellipse":         ["size", "opacity", "fill_shape"],
-    "Fill":            ["tolerance"],
-    "Magic Wand":      ["tolerance"],
-    "Gradient":        [],
-    "Text":            [],
-    "Picker":          [],
-    "Move":            [],
-    "Transform":       [],
-    "Marquee":         [],
-    "Lasso":           [],
-    "Sel Transform":   [],
-}
+# -----------------------------------------------------------------------------
+# Tool Button
+# -----------------------------------------------------------------------------
 
+class _ToolBtn(QPushButton):
+
+    _accent = QColor(_ACCENT)
+
+    def __init__(self, text: str, parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+
+        self.setProperty("tool_btn", "true")
+
+        self.setCheckable(True)
+
+        self.setMinimumSize(84, 84)
+        self.setMaximumHeight(84)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+
+        super().paintEvent(event)
+
+        if self.isChecked():
+            p = QPainter(self)
+
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+            p.fillRect(0, 0, 5, self.height(), self._accent)
+
+
+# -----------------------------------------------------------------------------
+# Group Header
+# -----------------------------------------------------------------------------
+
+class _GroupHeader(QLabel):
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(title.upper(), parent)
+
+        self.setObjectName("groupHeader")
+
+
+# -----------------------------------------------------------------------------
+# Tool Panel
+# -----------------------------------------------------------------------------
 
 class ToolPanel(QWidget):
+
     tool_selected = pyqtSignal(str)
-    brush_size_changed = pyqtSignal(int)
     tool_order_changed = pyqtSignal(list)
 
-    def __init__(self, ctx: ToolContext, tools: dict[str, Tool], parent: Optional[QWidget] = None,
-                 layout: str = "panel"):
+    def __init__(
+        self,
+        ctx: ToolContext,
+        tools: dict[str, Tool],
+        parent: Optional[QWidget] = None,
+        layout: str = "tools_dock",
+    ):
+
         super().__init__(parent)
+
         self.ctx = ctx
         self._layout_mode = layout
+
         self._buttons: dict[str, QPushButton] = {}
         self._shortcuts: dict[str, QShortcut] = {}
-        # tool_id -> display name. Lets the panel resolve special tools
-        # (e.g. the brush split-button) without hard-coding labels.
-        self._id_to_name: dict[str, str] = {
-            getattr(t, "tool_id", ""): n
-            for n, t in tools.items()
-            if getattr(t, "tool_id", "")
-        }
-        # Per-tool icon overrides (set by host before adding the button — lets
-        # custom brushes ship their own glyph instead of inheriting TOOL_ICONS).
-        self._icon_overrides: dict[str, str] = {}
+        self._tool_groups: dict[str, list[str]] = {}
+        # Per-instance icon/shortcut maps populated by Tool class attrs at
+        # registration time. Source of truth — no central file required.
+        self._icons: dict[str, str] = {}
+        self._tool_shortcuts: dict[str, str] = {}
+        self._id_to_name: dict[str, str] = {}
+        self._tool_order: list[str] = []
+        self._brush_presets: dict[str, list] = {}
+
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
-        # Toolbar-mode bookkeeping: per-setting list of QActions to toggle.
-        self._setting_actions: dict[str, list[QAction]] = {}
-        self._active_tool_name: Optional[str] = None
-        self.setStyleSheet(_TOOL_BTN_QSS)
 
-        if layout == "toolbar":
-            self._build_toolbar(tools)
-        elif layout == "tools_dock":
-            self._build_tools_grid(tools)
-        else:
-            self._build_panel(tools)
+        self.setStyleSheet(_PANEL_QSS)
 
-    # --- panel layout -------------------------------------------------------
-
-    def _build_panel(self, tools: dict[str, Tool]) -> None:
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Tools"))
-
-        self._grid_host = QWidget()
-        self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._grid_host)
+        self._build_ui()
 
         for name in tools.keys():
             self._add_button(name)
-        if tools:
-            self._buttons[next(iter(tools))].setChecked(True)
 
-        group = QGroupBox("Brush settings")
-        g_layout = QVBoxLayout(group)
+        if self._buttons:
+            first = next(iter(self._buttons.values()))
+            first.setChecked(True)
 
-        size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("Size"))
-        self.size_spin = self._make_size_spin()
-        size_row.addWidget(self.size_spin)
-        g_layout.addLayout(size_row)
+    # -------------------------------------------------------------------------
 
-        self.size_slider = self._make_size_slider()
-        g_layout.addWidget(self.size_slider)
+    def _build_ui(self):
 
-        self.hardness_slider = self._make_pct_row(
-            g_layout, "Hardness", self.ctx.brush_hardness, 0, 100, self._on_hardness
-        )
-        self.opacity_slider = self._make_pct_row(
-            g_layout, "Opacity", self.ctx.brush_opacity, 1, 100, self._on_opacity
-        )
-        self.spacing_slider = self._make_pct_row(
-            g_layout, "Spacing", self.ctx.brush_spacing, 1, 100, self._on_spacing
-        )
-
-        layout.addWidget(group)
-        layout.addStretch(1)
-
-    # --- tools-only dock grid (no inline brush settings — settings go on a top toolbar) -----
-
-    def _build_tools_grid(self, tools: dict[str, Tool]) -> None:
-        self.setMinimumSize(0, 0)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(2, 2, 2, 2)
-        outer.setSpacing(2)
-        self._grid_host = QWidget()
-        self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(3)
-        outer.addWidget(self._grid_host)
-        for name in tools.keys():
-            self._add_button(name)
-        if tools:
-            self._buttons[next(iter(tools))].setChecked(True)
-            self._active_tool_name = next(iter(tools))
-        outer.addStretch(1)
 
-    # --- toolbar layout -----------------------------------------------------
+        outer.setContentsMargins(0, 0, 0, 0)
 
-    def _build_toolbar(self, tools: dict[str, Tool]) -> None:
-        # In toolbar mode, ToolPanel itself stays empty; controls are added
-        # directly to QToolBars by `populate_toolbar` / `populate_settings_toolbar`.
-        self._tools_for_toolbar = tools
+        outer.setSpacing(0)
 
-    def populate_toolbar(self, toolbar) -> None:
-        """Row 1: tool buttons only."""
-        if self._layout_mode != "toolbar":
-            return
-        for name in self._tools_for_toolbar.keys():
-            self._add_button(name)
-            toolbar.addWidget(self._buttons[name])
-        if self._tools_for_toolbar:
-            first = next(iter(self._tools_for_toolbar))
-            self._buttons[first].setChecked(True)
-            self._active_tool_name = first
+        # active tool label
 
-    def populate_settings_toolbar(self, toolbar) -> None:
-        """Row 2: brush settings, shown/hidden per active tool."""
-        if self._layout_mode not in ("toolbar", "tools_dock"):
-            return
-        from PyQt6.QtWidgets import QCheckBox
+        self._active_label = QLabel("No Tool")
 
-        # --- size ---
-        size_actions: list[QAction] = []
-        size_actions.append(toolbar.addWidget(QLabel("Size")))
-        self.size_spin = self._make_size_spin()
-        size_actions.append(toolbar.addWidget(self.size_spin))
-        self.size_slider = self._make_size_slider()
-        self.size_slider.setFixedWidth(120)
-        size_actions.append(toolbar.addWidget(self.size_slider))
-        size_actions.append(toolbar.addSeparator())
-        self._setting_actions["size"] = size_actions
+        self._active_label.setObjectName("activeToolLabel")
 
-        # --- hardness ---
-        hardness_actions: list[QAction] = []
-        hardness_actions.append(toolbar.addWidget(QLabel("Hardness")))
-        self.hardness_slider = self._make_compact_pct_widgets(
-            self.ctx.brush_hardness, 0, 100, self._on_hardness
-        )
-        hardness_actions.append(toolbar.addWidget(self.hardness_slider))
-        hardness_actions.append(toolbar.addSeparator())
-        self._setting_actions["hardness"] = hardness_actions
+        outer.addWidget(self._active_label)
 
-        # --- opacity ---
-        opacity_actions: list[QAction] = []
-        opacity_actions.append(toolbar.addWidget(QLabel("Opacity")))
-        self.opacity_slider = self._make_compact_pct_widgets(
-            self.ctx.brush_opacity, 1, 100, self._on_opacity
-        )
-        opacity_actions.append(toolbar.addWidget(self.opacity_slider))
-        opacity_actions.append(toolbar.addSeparator())
-        self._setting_actions["opacity"] = opacity_actions
+        # search
 
-        # --- spacing ---
-        spacing_actions: list[QAction] = []
-        spacing_actions.append(toolbar.addWidget(QLabel("Spacing")))
-        self.spacing_slider = self._make_compact_pct_widgets(
-            self.ctx.brush_spacing, 1, 100, self._on_spacing
-        )
-        spacing_actions.append(toolbar.addWidget(self.spacing_slider))
-        spacing_actions.append(toolbar.addSeparator())
-        self._setting_actions["spacing"] = spacing_actions
+        self.search = QLineEdit()
 
-        # --- fill_shape ---
-        fill_actions: list[QAction] = []
-        self.fill_shape_box = QCheckBox("Fill shape")
-        self.fill_shape_box.setChecked(self.ctx.fill_shape)
-        self.fill_shape_box.toggled.connect(self._on_fill_shape)
-        fill_actions.append(toolbar.addWidget(self.fill_shape_box))
-        fill_actions.append(toolbar.addSeparator())
-        self._setting_actions["fill_shape"] = fill_actions
+        self.search.setObjectName("toolSearch")
 
-        # --- tolerance ---
-        tol_actions: list[QAction] = []
-        tol_actions.append(toolbar.addWidget(QLabel("Tolerance")))
-        self.tolerance_slider = self._make_compact_int_widgets(
-            int(self.ctx.fill_tolerance), 0, 255, self._on_tolerance
-        )
-        tol_actions.append(toolbar.addWidget(self.tolerance_slider))
-        tol_actions.append(toolbar.addSeparator())
-        self._setting_actions["tolerance"] = tol_actions
+        self.search.setPlaceholderText("Search tools...")
 
-        # Apply current tool's filter on first paint.
-        if self._active_tool_name:
-            self.set_active_tool(self._active_tool_name)
+        self.search.textChanged.connect(self._filter_tools)
 
-    def set_active_tool(self, name: str) -> None:
-        """Grey out settings not used by `name`. Layout stays fixed in size
-        so swapping tools doesn't reflow the toolbar — unused settings are
-        kept visible but disabled, signalling they exist for other tools."""
-        self._active_tool_name = name
-        btn = self._buttons.get(name)
-        if btn is None:
-            for b in self._buttons.values():
-                if b.property("tool_name") == name:
-                    btn = b
-                    break
-        if btn is not None and not btn.isChecked():
-            btn.blockSignals(True)
-            btn.setChecked(True)
-            btn.blockSignals(False)
-        if not self._setting_actions:
-            return
-        wanted = set(TOOL_SETTINGS.get(name, []))
-        for key, actions in self._setting_actions.items():
-            enabled = key in wanted
-            for a in actions:
-                w = a.defaultWidget() if hasattr(a, "defaultWidget") else None
-                if w is not None:
-                    w.setEnabled(enabled)
-                else:
-                    a.setEnabled(enabled)
+        outer.addWidget(self.search)
 
-    def _make_compact_pct_widgets(self, init: float, lo: int, hi: int, slot) -> SliderField:
-        sf = SliderField(lo, hi, int(init * 100), suffix="%", slider_width=90)
-        sf.valueChanged.connect(slot)
-        return sf
+        # scroll area
 
-    def _make_compact_int_widgets(self, init: int, lo: int, hi: int, slot) -> SliderField:
-        sf = SliderField(lo, hi, int(init), slider_width=90)
-        sf.valueChanged.connect(slot)
-        return sf
+        scroll = QScrollArea()
 
-    # --- widget builders ----------------------------------------------------
+        scroll.setWidgetResizable(True)
 
-    def _make_size_spin(self) -> QSpinBox:
-        w = QSpinBox()
-        w.setRange(1, 1024)
-        w.setValue(self.ctx.brush_size)
-        w.valueChanged.connect(self._on_size_change)
-        return w
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-    def _make_size_slider(self) -> QSlider:
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(1, 256)
-        s.setValue(min(self.ctx.brush_size, 256))
-        s.valueChanged.connect(self._on_size_slider)
-        return s
+        outer.addWidget(scroll)
 
-    def _make_pct_row(self, parent_layout: QVBoxLayout, label: str, init: float,
-                      lo: int, hi: int, slot) -> SliderField:
-        parent_layout.addWidget(QLabel(label))
-        sf = SliderField(lo, hi, int(init * 100), suffix="%")
-        sf.valueChanged.connect(slot)
-        parent_layout.addWidget(sf)
-        return sf
+        # content
 
-    def _sep(self) -> QFrame:
-        f = QFrame()
-        f.setFrameShape(QFrame.Shape.VLine)
-        f.setFrameShadow(QFrame.Shadow.Sunken)
-        return f
+        self._content = QWidget()
 
-    # --- internals ----------------------------------------------------------
+        scroll.setWidget(self._content)
 
-    def register_tool_id(self, tool_id: str, name: str) -> None:
-        """Register a tool_id -> display-name mapping. Lets the panel resolve
-        special tools (brush, etc.) without hard-coding their labels."""
-        if tool_id and name:
-            self._id_to_name[tool_id] = name
+        self._layout = QVBoxLayout(self._content)
 
-    def _name_for_id(self, tool_id: str) -> Optional[str]:
-        return self._id_to_name.get(tool_id)
+        self._layout.setContentsMargins(8, 8, 8, 8)
 
-    def _add_button(self, name: str) -> None:
+        self._layout.setSpacing(14)
+
+        # Brush settings live in the per-tool settings toolbar
+        # (`MainWindow._tool_settings_bar`), populated from each Tool's
+        # build_ui(). The tool dock itself only holds the tool browser.
+
+    # -------------------------------------------------------------------------
+
+    def set_tool_groups(
+        self,
+        groups: dict[str, list[str]]
+    ):
+
+        self._tool_groups = groups
+
+        # Reparent every known button OUT of the layout before tearing it
+        # down so Qt doesn't garbage-collect them along with the host
+        # widgets. Without this, the buttons in self._buttons become dead
+        # references and the next grid.addWidget(btn) segfaults.
+        for btn in self._buttons.values():
+            btn.setParent(self)
+
+        while self._layout.count():
+
+            item = self._layout.takeAt(0)
+
+            w = item.widget()
+
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+
+        for group_name, names in groups.items():
+
+            valid = [
+                n for n in names
+                if n in self._buttons
+            ]
+
+            if not valid:
+                continue
+
+            header = _GroupHeader(group_name)
+
+            self._layout.addWidget(header)
+
+            grid_host = QWidget()
+
+            grid = QGridLayout(grid_host)
+
+            grid.setContentsMargins(0, 0, 0, 0)
+
+            grid.setHorizontalSpacing(8)
+
+            grid.setVerticalSpacing(8)
+
+            for i, name in enumerate(valid):
+
+                btn = self._buttons[name]
+
+                grid.addWidget(
+                    btn,
+                    i // _COLUMNS,
+                    i % _COLUMNS,
+                )
+
+            self._layout.addWidget(grid_host)
+
+        self._layout.addStretch(1)
+
+    # -------------------------------------------------------------------------
+
+    def _add_button(self, name: str):
+
         label = self._label_for(name)
-        tip = self._tooltip_for(name)
-        if name == self._name_for_id("brush"):  # split button with preset picker
-            btn = QToolButton()
-            btn.setText(label)
-            btn.setToolTip(tip)
-            btn.setCheckable(True)
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-            btn.clicked.connect(lambda _=False, n=name: self.tool_selected.emit(n))
-            self._group.addButton(btn)
-            if self._layout_mode == "toolbar":
-                btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-                fm = btn.fontMetrics()
-                btn.setMinimumWidth(fm.horizontalAdvance(label) + 32)
-                btn.setMinimumHeight(28)
-            else:
-                btn.setMinimumHeight(30)
-                count = self._grid.count()
-                self._grid.addWidget(btn, count // 2, count % 2)
-            self._buttons[name] = btn
-            self._install_shortcut(name, btn)
-            return
 
-        btn = QPushButton(label)
-        btn.setToolTip(tip)
-        btn.setCheckable(True)
-        btn.clicked.connect(lambda _=False, n=name: self.tool_selected.emit(n))
+        btn = _ToolBtn(label)
+
+        btn.setToolTip(self._tooltip_for(name))
+
+        btn.clicked.connect(
+            lambda _=False, n=name: self._tool_clicked(n)
+        )
+
         self._group.addButton(btn)
-        if self._layout_mode == "toolbar":
-            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-            fm = btn.fontMetrics()
-            btn.setMinimumWidth(fm.horizontalAdvance(label) + 18)
-            btn.setMinimumHeight(28)
-        else:
-            btn.setMinimumHeight(30)
-            count = self._grid.count()
-            self._grid.addWidget(btn, count // 2, count % 2)
+
         self._buttons[name] = btn
+        if name not in self._tool_order:
+            self._tool_order.append(name)
+
         self._install_shortcut(name, btn)
 
+    # -------------------------------------------------------------------------
+
+    def _tool_clicked(self, name: str):
+
+        self._active_label.setText(name)
+
+        self.tool_selected.emit(name)
+
+    # -------------------------------------------------------------------------
+
     def _label_for(self, name: str) -> str:
-        icon = self._icon_overrides.get(name) or _default_icon_for(name)
-        return f"{icon}  {name}" if icon else name
+
+        icon = self._icons.get(name) or TOOL_ICONS.get(name, "")
+
+        if icon:
+            return f"{icon}\n{name}"
+
+        return name
+
+    # -------------------------------------------------------------------------
 
     def _tooltip_for(self, name: str) -> str:
-        sc = TOOL_SHORTCUTS.get(name)
-        return f"{name}  ({sc})" if sc else name
+
+        sc = self._tool_shortcuts.get(name) or TOOL_SHORTCUTS.get(name)
+
+        if sc:
+            return f"{name} ({sc})"
+
+        return name
+
+    # -------------------------------------------------------------------------
+
+    def _filter_tools(self, text: str):
+
+        text = text.lower().strip()
+
+        for name, btn in self._buttons.items():
+
+            visible = text in name.lower()
+
+            btn.setVisible(visible)
+
+    # -------------------------------------------------------------------------
+
+    def _install_shortcut(self, name: str, btn):
+
+        # Drop any prior binding so re-registration updates cleanly.
+        old = self._shortcuts.pop(name, None)
+        if old is not None:
+            old.setEnabled(False)
+            old.deleteLater()
+
+        seq = self._tool_shortcuts.get(name) or TOOL_SHORTCUTS.get(name)
+
+        if not seq:
+            return
+
+        sc = QShortcut(QKeySequence(seq), self)
+
+        sc.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+
+        sc.activated.connect(
+            lambda b=btn, n=name: self._shortcut_trigger(b, n)
+        )
+
+        self._shortcuts[name] = sc
+
+    # -------------------------------------------------------------------------
+
+    def _shortcut_trigger(self, btn, name):
+
+        fw = QApplication.focusWidget()
+
+        if isinstance(
+            fw,
+            (
+                QLineEdit,
+                QTextEdit,
+                QPlainTextEdit,
+                QAbstractSpinBox,
+            )
+        ):
+            return
+
+        if isinstance(fw, QComboBox) and fw.isEditable():
+            return
+
+        btn.setChecked(True)
+
+        self._tool_clicked(name)
+
+    # -------------------------------------------------------------------------
+    # Public API used by MainWindow + plugin loader
+    # -------------------------------------------------------------------------
+
+    def register_tool_id(self, tool_id: str, name: str) -> None:
+        """Map a stable tool_id to its current display name."""
+        if tool_id:
+            self._id_to_name[tool_id] = name
+
+    def name_for_id(self, tool_id: str) -> Optional[str]:
+        return self._id_to_name.get(tool_id)
 
     def set_tool_icon(self, name: str, icon: str) -> None:
-        """Register a custom glyph for ``name``. Call before ``add_tool_button``
-        / ``set_tool_categories`` for the icon to appear; if the button already
-        exists, its label and tooltip are refreshed in place."""
-        if not icon:
-            return
-        self._icon_overrides[name] = icon
+        """Record this tool's icon glyph (declared on Tool.icon)."""
+        if icon:
+            self._icons[name] = icon
+        else:
+            self._icons.pop(name, None)
         btn = self._buttons.get(name)
         if btn is not None:
             btn.setText(self._label_for(name))
+
+    def set_tool_shortcut(self, name: str, seq: str) -> None:
+        """Bind a per-tool shortcut declared on Tool.shortcut.
+
+        Pass an empty string to clear the binding. Re-registration drops
+        the prior QShortcut and installs the new one.
+        """
+        if seq:
+            self._tool_shortcuts[name] = seq
+        else:
+            self._tool_shortcuts.pop(name, None)
+        btn = self._buttons.get(name)
+        if btn is not None:
             btn.setToolTip(self._tooltip_for(name))
+            self._install_shortcut(name, btn)
 
-    def _install_shortcut(self, name: str, btn) -> None:
-        seq = TOOL_SHORTCUTS.get(name)
-        if not seq or name in self._shortcuts:
-            return
-        sc = QShortcut(QKeySequence(seq), self)
-        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        sc.activated.connect(lambda b=btn, n=name: self._fire_shortcut(b, n))
-        self._shortcuts[name] = sc
-
-    def _fire_shortcut(self, btn, name: str) -> None:
-        # Don't hijack single-letter keys while user is typing in a text
-        # field, spin box, or any editable widget.
-        from PyQt6.QtWidgets import (
-            QApplication, QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox,
-        )
-        fw = QApplication.focusWidget()
-        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
-            return
-        if isinstance(fw, QComboBox) and fw.isEditable():
-            return
-        btn.setChecked(True)
-        self.tool_selected.emit(name)
-
-    def add_tool_button(self, name: str, toolbar=None) -> None:
+    def add_tool_button(self, name: str) -> None:
+        """Create + place a button for `name`. Idempotent."""
         if name in self._buttons:
             return
         self._add_button(name)
-        if toolbar is not None and self._layout_mode == "toolbar":
-            toolbar.addWidget(self._buttons[name])
-
-    # --- reorder support ---------------------------------------------------
-
-    def get_tool_order(self) -> list[str]:
-        return list(self._buttons.keys())
-
-    def set_tool_order(self, order: list[str]) -> None:
-        """Reflow buttons in `order`. Names not in `order` keep relative order
-        and are appended at the end. No-op if no buttons exist yet."""
-        if not self._buttons:
-            return
-        new_buttons: dict = {}
-        for n in order:
-            if n in self._buttons:
-                new_buttons[n] = self._buttons[n]
-        for n, b in self._buttons.items():
-            if n not in new_buttons:
-                new_buttons[n] = b
-        self._buttons = new_buttons
-        if self._layout_mode in ("tools_dock", "panel"):
-            grid = getattr(self, "_grid", None)
-            if grid is None:
-                return
-            for btn in self._buttons.values():
-                grid.removeWidget(btn)
-            for i, btn in enumerate(self._buttons.values()):
-                grid.addWidget(btn, i // 2, i % 2)
-
-    def open_reorder_dialog(self) -> None:
-        from PyQt6.QtWidgets import (
-            QAbstractItemView,
-            QDialog,
-            QDialogButtonBox,
-            QListWidget,
-            QListWidgetItem,
-            QVBoxLayout,
-        )
-        if not self._buttons:
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Customize tool order")
-        dlg.resize(280, 380)
-        lay = QVBoxLayout(dlg)
-        lst = QListWidget(dlg)
-        lst.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        lst.setDefaultDropAction(Qt.DropAction.MoveAction)
-        lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        for n in self._buttons.keys():
-            item = QListWidgetItem(self._label_for(n))
-            item.setData(Qt.ItemDataRole.UserRole, n)
-            lst.addItem(item)
-        lay.addWidget(lst)
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            order = [
-                lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
-            ]
-            self.set_tool_order(order)
-            self.tool_order_changed.emit(order)
-
-    def contextMenuEvent(self, e):  # noqa: N802
-        from PyQt6.QtWidgets import QMenu
-        m = QMenu(self)
-        m.addAction("Customize tool order...", self.open_reorder_dialog)
-        m.exec(e.globalPos())
+        self._tool_order.append(name)
+        self._reflow_grid()
 
     def remove_tool_button(self, name: str) -> None:
         btn = self._buttons.pop(name, None)
-        if btn is None:
-            return
-        self._group.removeButton(btn)
-        btn.setParent(None)
-        btn.deleteLater()
-        sc = self._shortcuts.pop(name, None)
-        if sc is not None:
-            sc.setParent(None)
-            sc.deleteLater()
-
-    def set_brush_presets(self, presets_by_category: dict) -> None:
-        """Populate the Brush button's dropdown menu with category submenus.
-
-        ``presets_by_category`` maps category name → list of
-        ``BrushPreset`` objects (from ``app.brush_loader``).
-        Hovering over a category in the menu opens its submenu; clicking
-        a preset applies all of its parameters and activates the Brush
-        tool.
-        """
-        from PyQt6.QtWidgets import QMenu
-        brush_name = self._name_for_id("brush")
-        btn = self._buttons.get(brush_name) if brush_name else None
-        if btn is None or not isinstance(btn, QToolButton):
-            return
-        menu = QMenu(btn)
-        for category, presets in presets_by_category.items():
-            if not presets:
-                continue
-            sub = menu.addMenu(category)
-            for preset in presets:
-                label = f"{preset.icon}  {preset.name}  ({preset.size}px)"
-                action = sub.addAction(label)
-                action.triggered.connect(
-                    lambda _=False, p=preset: self._apply_preset(p)
-                )
-        btn.setMenu(menu)
-
-    def set_tool_categories(self, categories: dict[str, list[str]]) -> None:
-        """Replace all individual tool buttons with one split-button per
-        category folder.  Each split-button shows the currently active tool
-        name; the popup menu lets the user switch to any other tool in that
-        folder.  "Basic" is always placed first; remaining categories follow
-        in their original discovery order.
-
-        ``categories`` maps category name → ordered list of tool display names.
-        """
-        from PyQt6.QtWidgets import QMenu
-
-        # Basic first, then the rest in stable order.
-        ordered = sorted(categories.items(), key=lambda kv: (0 if kv[0] == "Basic" else 1, kv[0]))
-
-        # Tear down every existing per-tool button.
-        for btn in list(self._buttons.values()):
+        if btn is not None:
             self._group.removeButton(btn)
-            self._grid.removeWidget(btn)
             btn.setParent(None)
             btn.deleteLater()
-        self._buttons.clear()
-        for sc in self._shortcuts.values():
-            sc.setParent(None)
+        sc = self._shortcuts.pop(name, None)
+        if sc is not None:
+            sc.setEnabled(False)
             sc.deleteLater()
-        self._shortcuts.clear()
+        if name in self._tool_order:
+            self._tool_order.remove(name)
+        self._icons.pop(name, None)
+        self._tool_shortcuts.pop(name, None)
+        self._reflow_grid()
 
-        first_btn: QToolButton | None = None
-        first_name: Optional[str] = None
-        for _cat, names in ordered:
-            if not names:
-                continue
-            primary = names[0]
+    def set_active_tool(self, name: str) -> None:
+        btn = self._buttons.get(name)
+        if btn is None:
+            return
+        btn.setChecked(True)
+        self._active_label.setText(name)
 
-            split = QToolButton()
-            split.setText(self._label_for(primary))
-            split.setToolTip(self._tooltip_for(primary))
-            split.setCheckable(True)
-            split.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            split.setMinimumHeight(30)
-            split.setProperty("tool_name", primary)
+    def set_tool_categories(self, categories: dict) -> None:
+        """Group buttons under category headers.
 
-            split.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-            menu = QMenu(split)
-            for name in names:
-                action = menu.addAction(self._label_for(name))
-                sc = TOOL_SHORTCUTS.get(name)
-                if sc:
-                    action.setShortcut(QKeySequence(sc))
-                action.triggered.connect(
-                    lambda _=False, n=name, s=split: self._on_category_pick(n, s)
-                )
-            split.setMenu(menu)
+        `categories` maps category label → list of tool names. Names not in
+        any listed category fall under an "Other" section preserving order.
+        """
+        groups: dict[str, list[str]] = {}
+        listed: set[str] = set()
+        for cat, names in (categories or {}).items():
+            valid = [n for n in names if n in self._buttons]
+            if valid:
+                groups[cat] = valid
+                listed.update(valid)
+        leftover = [n for n in self._tool_order if n not in listed]
+        if leftover:
+            groups.setdefault("Other", []).extend(leftover)
+        self.set_tool_groups(groups)
 
-            split.clicked.connect(
-                lambda _=False, s=split: self.tool_selected.emit(s.property("tool_name") or s.text())
-            )
+    def set_tool_order(self, order: list) -> None:
+        """Reorder buttons by name. Unknown names skipped."""
+        if not order:
+            return
+        valid = [n for n in order if n in self._buttons]
+        rest = [n for n in self._tool_order if n not in valid]
+        self._tool_order = valid + rest
+        self._reflow_grid()
 
-            self._group.addButton(split)
-            self._buttons[primary] = split
-            count = self._grid.count()
-            self._grid.addWidget(split, count // 2, count % 2)
-            self._install_shortcut(primary, split)
-
-            if first_btn is None:
-                first_btn = split
-                first_name = primary
-
-        if first_btn is not None:
-            first_btn.setChecked(True)
-            self._active_tool_name = first_name
-
-    def _on_category_pick(self, name: str, split_btn: "QToolButton") -> None:
-        """Switch the split-button label to ``name`` and emit tool_selected."""
-        # Remap _buttons so the new active tool name resolves to this button.
-        old_key = next((k for k, v in self._buttons.items() if v is split_btn), None)
-        if old_key and old_key != name:
-            self._buttons.pop(old_key)
-            self._buttons[name] = split_btn
-        split_btn.setText(self._label_for(name))
-        split_btn.setToolTip(self._tooltip_for(name))
-        split_btn.setProperty("tool_name", name)
-        split_btn.setChecked(True)
-        self._active_tool_name = name
-        self.tool_selected.emit(name)
+    def set_brush_presets(self, presets: dict) -> None:
+        """Register brush presets for the brush-presets dropdown menu."""
+        self._brush_presets = presets or {}
 
     def _apply_preset(self, preset) -> None:
-        """Apply ``preset`` fields to the tool context and sync all sliders."""
-        self.ctx.brush_size = preset.size
-        self.ctx.brush_hardness = preset.hardness
-        self.ctx.brush_opacity = preset.opacity
-        self.ctx.brush_spacing = preset.spacing
-        # Sync toolbar / panel slider widgets if they have been built yet.
-        if hasattr(self, "size_spin"):
-            self.size_spin.blockSignals(True)
-            self.size_spin.setValue(preset.size)
-            self.size_spin.blockSignals(False)
-        if hasattr(self, "size_slider"):
-            self.size_slider.blockSignals(True)
-            self.size_slider.setValue(min(preset.size, self.size_slider.maximum()))
-            self.size_slider.blockSignals(False)
-        if hasattr(self, "hardness_slider"):
-            self.hardness_slider.setValue(int(preset.hardness * 100))
-        if hasattr(self, "opacity_slider"):
-            self.opacity_slider.setValue(int(preset.opacity * 100))
-        if hasattr(self, "spacing_slider"):
-            self.spacing_slider.setValue(int(preset.spacing * 100))
-        # Check the Brush button and emit tool_selected so canvas switches.
-        brush_name = self._name_for_id("brush")
-        if brush_name is None:
+        """Activate a brush preset: set ctx + emit selection.
+
+        Settings widgets live in the per-tool toolbar (built by the
+        active Tool's build_ui()), so we only update the shared ctx.
+        The toolbar widget reads ctx on next event.
+        """
+        size = getattr(preset, "size", None)
+        if size is not None:
+            self.ctx.brush_size = int(size)
+        hardness = getattr(preset, "hardness", None)
+        if hardness is not None:
+            self.ctx.brush_hardness = float(hardness)
+        opacity = getattr(preset, "opacity", None)
+        if opacity is not None:
+            self.ctx.brush_opacity = float(opacity)
+        target = getattr(preset, "tool_id", "") or getattr(preset, "tool_name", "")
+        name = self._id_to_name.get(target, target)
+        if name and name in self._buttons:
+            self.set_active_tool(name)
+            self.tool_selected.emit(name)
+
+    # -------------------------------------------------------------------------
+
+    def _reflow_grid(self) -> None:
+        """If categories are set, leave grouped layout alone; otherwise put
+        every known tool into a single grid in `_tool_order`.
+        """
+        if self._tool_groups:
             return
-        btn = self._buttons.get(brush_name)
-        if btn is not None:
-            btn.setChecked(True)
-        self.tool_selected.emit(brush_name)
-
-    # --- handlers -----------------------------------------------------------
-
-    def _on_size_change(self, v: int) -> None:
-        self.ctx.brush_size = v
-        if self.size_slider.value() != min(v, self.size_slider.maximum()):
-            self.size_slider.blockSignals(True)
-            self.size_slider.setValue(min(v, self.size_slider.maximum()))
-            self.size_slider.blockSignals(False)
-        self.brush_size_changed.emit(v)
-
-    def _on_size_slider(self, v: int) -> None:
-        if self.size_spin.value() != v:
-            self.size_spin.setValue(v)
-
-    def _on_hardness(self, v: int) -> None:
-        self.ctx.brush_hardness = v / 100.0
-
-    def _on_opacity(self, v: int) -> None:
-        self.ctx.brush_opacity = v / 100.0
-
-    def _on_spacing(self, v: int) -> None:
-        self.ctx.brush_spacing = v / 100.0
-
-    def _on_fill_shape(self, on: bool) -> None:
-        self.ctx.fill_shape = bool(on)
-
-    def _on_tolerance(self, v: int) -> None:
-        self.ctx.fill_tolerance = int(v)
-        cb = getattr(self.ctx, "on_tolerance_changed", None)
-        if cb is not None:
-            cb()
+        # Reparent buttons out before destroying the grid host so they
+        # survive the deleteLater on the host (see set_tool_groups).
+        for btn in self._buttons.values():
+            btn.setParent(self)
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        for i, n in enumerate(self._tool_order):
+            btn = self._buttons.get(n)
+            if btn is None:
+                continue
+            grid.addWidget(btn, i // _COLUMNS, i % _COLUMNS)
+        self._layout.addWidget(grid_host)
+        self._layout.addStretch(1)

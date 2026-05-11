@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-05-10 — Plugin Hot-Reload, Dark Palette, Numba Composite & Brush HUD
+
+### Added
+1. **`app/main_window.py` + `app/plugin_loader.py` — plugin hot-reload watcher.**
+   `snapshot_plugin_files(plugins_dir)` walks `Plugins/**.py` recursively and
+   returns `{path: (mtime, size)}` so package internals (helpers next to
+   `tool.py`) also trigger reloads. `MainWindow` builds the baseline snapshot
+   right after the deferred plugin init, then a 1 s `QTimer`
+   (`_plugin_watch_timer` → `_poll_plugin_changes`) compares snapshots each
+   tick; a two-tick debounce (`_plugin_pending_snapshot`) waits for the
+   editor to finish a burst-save before firing `reload_plugins()`. The
+   reload path drops the active tool if it came from a plugin, tears down
+   plugin tools, brush tools (`_brush_tool_names`), and plugin docks
+   (`_plugin_dock_titles`), calls `shutdown_plugins` + `purge_plugin_modules`
+   to clear `sys.modules`, re-runs `load_plugins` + `load_brush_tools`, and
+   reports `Reloaded: N plugin(s), M brush tool(s)` on the status bar.
+   `_plugin_reload_in_progress` re-entrancy guard stops a tick mid-reload
+   from kicking off another. The timer is stopped on `closeEvent`.
+
+2. **`main.py` — modern dark Fusion palette + base QSS.**
+   New `_apply_dark_palette(app)` installs a full dark `QPalette` (window
+   `#1e1f22`, base `#18191c`, surface `#2b2d31`, border `#3c3f44`, text
+   `#dcdddd`, dim text `#969798`, default highlight `#4a90e2`) plus
+   disabled-state colors, then layers a stylesheet that themes `QToolTip`,
+   `QMenu` / `QMenuBar`, `QStatusBar`, `QToolBar`, `QDockWidget::title`,
+   `QSplitter::handle`, `QHeaderView::section`, `QTabBar::tab`, and
+   `QScrollBar` (vertical + horizontal). Called right after the
+   `QApplication` is built so child widgets inherit dark colors before any
+   window paints. `_apply_accent` in `main_window` reads `app.palette()`
+   and only overrides `Highlight`, so user-chosen accent colors layer on
+   top of the dark base instead of replacing it.
+
+3. **`app/blending.py` — fused numba JIT composite kernel.**
+   `_composite_kernel(base, top, mode_id, opacity)` is a
+   `@njit(cache=True, parallel=True, fastmath=True)` parallel kernel
+   (`prange` over rows) that does blend + Porter-Duff "over" alpha
+   compositing in one per-pixel pass, no intermediate HxWx4 allocations.
+   `mode_id` (int) covers all nine modes — `0 Normal, 1 Multiply,
+   2 Screen, 3 Overlay, 4 Darken, 5 Lighten, 6 Add, 7 Subtract,
+   8 Difference` — with inline branch ladders, channel clamp to `[0, 1]`,
+   and `out_a = src_a + ba * (1 - src_a)` Porter-Duff alpha. `composite()`
+   prefers the kernel when `_HAS_NUMBA` is set and shapes match
+   (`ascontiguousarray` float32 HxWx4), else falls through to the
+   numpy path (`_composite_numpy`). Numba is a soft-import: install with
+   `pip install numba` for 10x-50x speedup on big canvases, otherwise
+   the numpy fallback runs untouched and `njit` / `prange` are stubbed
+   so the kernel definition still parses.
+
+4. **`app/ui/hud_picker.py` — floating on-canvas brush HUD.**
+   `HudPicker(QFrame)` is a frameless `Qt.WindowType.Tool` panel with
+   semi-opaque background (`rgba(36,38,42,235)`) that hosts three
+   `SliderField` rows — Size (1–1024 px), Opacity (1–100 %), Hardness
+   (0–100 %) — and primary / secondary color swatches that open
+   `QColorDialog` with alpha. `_read` / `_write` thread values through
+   the active `Tool` instance (`brush_size`, `brush_opacity`,
+   `brush_hardness`) and fall back to `ToolContext` for legacy tools
+   that still keep settings on the shared context. Color picks update
+   the swatch QSS and call `color_panel.refresh()` so the sidebar stays
+   in sync. `MainWindow._install_hud_picker` registers a `Shift+S`
+   `QShortcut` with `ApplicationShortcut` context that calls
+   `toggle_at_cursor`: anchors the HUD 16 px below/right of the cursor
+   so it doesn't sit directly under the pointer, refreshes from current
+   tool state on each open, hides on re-press.
+
+
 ## 2026-05-09 — MainWindow Controllers, Cross-Platform Fonts & Test Suite
 
 ### Added
@@ -69,7 +134,6 @@
 
 7. **`build.bat` — tighter source mirror + richer release payload.**
    The `Git Main` mirror now also excludes `session`, `.pytest_cache`,
-   and `.claude` so user-local data never leaks into the git tree.
    The `Release` copy now also ships `Create_tool_or_Brush.py` (the
    plugin-authoring cheat sheet) and the entire `docs/` folder
    (`PLUGIN_API.md`, etc.) alongside `Layered.exe`, `Plugins/`,

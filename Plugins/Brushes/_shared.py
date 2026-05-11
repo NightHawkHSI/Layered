@@ -1,6 +1,11 @@
 ﻿"""
 Shared helpers and base classes for brush and transform plugins.
 
+One-stop import for any brush. Re-exports stdlib, PIL, PyQt6, app.tools
+helpers, and SliderField so brush authors only need:
+
+    from Plugins.Brushes._shared import *
+
 This module handles the complex math for:
 1. Interactive shape transformation (Move, Scale, Rotate).
 2. Pixel-perfect selection lifting and moving.
@@ -8,24 +13,68 @@ This module handles the complex math for:
 """
 from __future__ import annotations
 
+# --- stdlib --------------------------------------------------------------
+import colorsys
 import enum
 import math
+import random
+import sys
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Any, NamedTuple, Union, TypedDict
+from pathlib import Path
+from typing import Any, Callable, NamedTuple, Optional, Tuple, TypedDict, Union
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+# --- PIL -----------------------------------------------------------------
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+# --- app.* ---------------------------------------------------------------
 from app.layer import Layer
 from app.tools import (
+    Color,
     Tool,
     ToolContext,
+    _apply_selection_to_stamp,
     _brush_mask,
     _clip_layer_to_selection,
+    _scaled_mask,
     _selection_at_layer,
     _stamp_color,
     _stamp_erase,
     _walk,
+    build_brush_settings_ui,
+    resolve_font_path,
 )
+from app.ui.slider_field import SliderField
+
+# --- PyQt6 (safe to import here; brushes load after QApplication exists) -
+from PyQt6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, QTimer, Qt
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
+)
+
+
+def __getattr__(name: str):
+    # Lazy numpy import — only pay the cost if a brush actually uses it.
+    if name in ("np", "numpy"):
+        import numpy as _np
+        globals()["np"] = _np
+        globals()["numpy"] = _np
+        return _np
+    raise AttributeError(f"module 'Plugins.Brushes._shared' has no attribute {name!r}")
 
 
 def _Qt_DashLine():
@@ -53,10 +102,30 @@ def _right_button_held() -> bool:
 
 
 __all__ = [
-    "Tool", "ToolContext", "Layer", "ToolPhase", "Box",
+    # core
+    "Tool", "ToolContext", "Layer", "ToolPhase", "Box", "Color",
     "_ShapeTool", "_SelectionToolBase", "_local_filter_stamp",
-    "_walk", "_stamp_color", "_stamp_erase",
+    # painting helpers
+    "_walk", "_stamp_color", "_stamp_erase", "_brush_mask", "_scaled_mask",
+    "_selection_at_layer", "_apply_selection_to_stamp",
+    "_clip_layer_to_selection",
+    # UI helpers
+    "build_brush_settings_ui", "SliderField", "resolve_font_path",
     "_Qt_DashLine", "_Qt_NoBrush", "_right_button_held",
+    # stdlib re-exports
+    "colorsys", "deque", "enum", "math", "random", "sys",
+    "dataclass", "Path",
+    "Any", "Callable", "NamedTuple", "Optional", "Tuple", "TypedDict", "Union",
+    # PIL
+    "Image", "ImageChops", "ImageDraw", "ImageFilter", "ImageFont",
+    # PyQt6
+    "Qt", "QTimer", "QPoint", "QPointF", "QRect", "QRectF", "QLineF",
+    "QBrush", "QColor", "QPainter", "QPen", "QPolygonF",
+    "QApplication", "QWidget", "QLabel", "QFormLayout", "QGridLayout",
+    "QHBoxLayout", "QVBoxLayout", "QSpinBox", "QCheckBox", "QComboBox",
+    "QPushButton", "QToolButton", "QMenu", "QWidgetAction",
+    # lazy
+    "np", "numpy",
 ]
 
 # ---------------------------------------------------------------------------

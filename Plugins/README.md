@@ -5,6 +5,7 @@
 **Drop a `.py` file here and Layered picks it up automatically — no config needed.**
 
 [![Plugin API Docs](https://img.shields.io/badge/📖%20Plugin%20API-Full%20Reference-a855f7?style=flat-square&labelColor=1c1917)](../docs/PLUGIN_API.md)
+[![Build a Brush](https://img.shields.io/badge/🖌%20Build%20a%20Brush-Guide-f59e0b?style=flat-square&labelColor=1c1917)](../docs/build_brush.md)
 [![Back to README](https://img.shields.io/badge/←%20Back%20to%20README-22c55e?style=flat-square&labelColor=1c1917)](../README.md)
 
 </div>
@@ -16,16 +17,10 @@
 ```
 Plugins/
 ├── 📁 Brushes/        # Tool plugins — each subfolder is a Tools-dock group
-│   ├── Paint/         #   Brush · Eraser · Fill · Gradient
-│   ├── Draw/          #   Line · Rectangle · Ellipse
-│   ├── Shapes/        #   Triangle · Star · Pentagon · Diamond · Hexagon
-│   ├── Lines/         #   Arrow · Curve · Dashed Line
-│   ├── Custom Brushes/#   Spray · Square Brush · Scatter  ← drag & drop new tools here
-│   ├── Select/        #   Lasso · Marquee · Magic Wand · Sel Transform
-│   ├── Effects/       #   Blur · Sharpen · Smudge · Clone Stamp
-│   ├── Transform/     #   Move · Transform
-│   ├── Text/          #   Text
-│   └── Utility/       #   Picker
+│   ├── _shared.py     #   One-stop import for every brush
+│   └── <Category>/<Tool>/
+│       ├── tool.py    #   Required — defines TOOL_CLASS = MyTool
+│       └── tool.json  #   Optional — display name, id, icon, category override
 ├── 📁 Color/          # Brightness, hue shift, palette snap, …
 ├── 📁 Distortion/     # Warp, wave, glitch sorter, …
 ├── 📁 ETC/            # Uncategorised plugins
@@ -36,14 +31,15 @@ Plugins/
 ```
 
 > `Plugins/Brushes/` is loaded by `app.tool_loader`, the rest by
-> `app.plugin_loader`. Files prefixed with `_` (e.g. `_builtin_tools.py`)
-> are skipped by both loaders — use the underscore prefix for shared
+> `app.plugin_loader`. Files prefixed with `_` (e.g. `_shared.py`) are
+> skipped by both loaders — use the underscore prefix for shared
 > helpers that should not auto-register.
 >
-> **To add your own tool:** drop a `<ToolName>/tool.py` folder inside any
-> group folder. See
-> [`Brushes/Custom Brushes/HOW_TO_ADD_TOOLS.md`](Brushes/Custom%20Brushes/HOW_TO_ADD_TOOLS.md)
-> for templates and full instructions.
+> **To add your own brush:** drop a `<Category>/<ToolName>/tool.py`
+> folder under `Brushes/`. Each `Tool` subclass declares its own `icon`,
+> `shortcut`, and `build_ui()` — settings render in the per-tool
+> settings toolbar. Full guide:
+> [`docs/build_brush.md`](../docs/build_brush.md).
 
 ---
 

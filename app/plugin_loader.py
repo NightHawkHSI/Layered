@@ -136,12 +136,19 @@ def load_plugins(
     tool_context: ToolContext,
     canvas,
     host: Optional[PluginHost] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> PluginRegistry:
     registry = PluginRegistry()
     files = discover_plugin_files(plugins_dir)
     log.info("Discovered %d plugin file(s) in %s", len(files), plugins_dir)
+    total = len(files)
 
-    for path, folder_category in files:
+    for idx, (path, folder_category) in enumerate(files):
+        if on_progress is not None:
+            try:
+                on_progress(idx, total, path.stem)
+            except Exception:
+                pass
         loaded = LoadedPlugin(name=path.stem, module_path=path, plugin=None)  # type: ignore
         plugin_logger = get_plugin_logger(path.stem)
         try:
