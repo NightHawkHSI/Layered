@@ -101,23 +101,24 @@ if exist "%ROOT%\Icon.ico" set ICONARG=--icon="%ROOT%\Icon.ico"
 call :stage 75 "Compilation"
 echo    %W%[%R%WAIT%W%] %Y%PyInstaller is freezing Layered.exe...%N%
 if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
+mkdir "%BUILDTMP%"
 REM --onedir avoids the ~5-6s --onefile self-extract on every cold launch.
-"%PY_BIN%" -m PyInstaller --noconfirm --onedir --windowed --name Layered ^
-    --contents-directory _internal ^
-    --collect-submodules app ^
-    --collect-submodules PIL ^
-    --collect-all PyQt6 ^
-    %ICONARG% ^
-    --distpath "%BUILDTMP%\dist" ^
-    --workpath "%BUILDTMP%\build" ^
-    --specpath "%BUILDTMP%" ^
-    "%ROOT%\main.py" >> "%LOGFILE%" 2>&1
+REM Write PyInstaller invocation to a temp .cmd so its native quoting (incl.
+REM ICONARG's embedded quotes) parses cleanly, then run it through PowerShell
+REM Tee-Object — live progress on screen AND appended to the log.
+set "PIBAT=%BUILDTMP%\_run_pyinstaller.cmd"
+> "%PIBAT%" echo @echo off
+>> "%PIBAT%" echo "%PY_BIN%" -m PyInstaller --noconfirm --onedir --windowed --name Layered --contents-directory _internal --collect-submodules app --collect-submodules PIL --collect-all PyQt6 --collect-all moderngl --collect-all numba %ICONARG% --log-level=INFO --distpath "%BUILDTMP%\dist" --workpath "%BUILDTMP%\build" --specpath "%BUILDTMP%" "%ROOT%\main.py"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "& { & cmd /c '\"%PIBAT%\"' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
 if errorlevel 1 goto :fail_pyinstaller
 
-REM Flatten dist\Layered\* up into Release so Layered.exe sits at top.
+REM Flatten dist\Layered up into Release. Same-volume rename = instant;
+REM no per-file robocopy walk that hung the previous build.
 echo    %B%-%N% Flattening onedir output into %Y%Release%N%
-robocopy "%BUILDTMP%\dist\Layered" "%RELEASE%" *.* /E /MOVE /NFL /NDL /NJH /NJS /NP >> "%LOGFILE%" 2>&1
-if %ERRORLEVEL% GEQ 8 goto :fail_pyinstaller
+if exist "%RELEASE%" rmdir /s /q "%RELEASE%"
+move "%BUILDTMP%\dist\Layered" "%RELEASE%" >> "%LOGFILE%" 2>&1
+if errorlevel 1 goto :fail_pyinstaller
 
 call :stage 95 "Final Assembly"
 if exist "%ROOT%\Plugins" (

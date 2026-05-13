@@ -193,6 +193,9 @@ class ToolContext:
     alt_held: bool = False
     ctrl_held: bool = False
     canvas_zoom: float = field(default=1.0, repr=False)
+    # Tablet pressure 0.0-1.0 when stroke originated from a stylus tablet
+    # event; None when input came from mouse (brushes fall back to velocity).
+    pressure: Optional[float] = None
 
     # --- active layer (set by Canvas before each event) ---
     active_layer: Any = field(default=None, repr=False)
@@ -264,6 +267,10 @@ class Tool:
     shortcut: str = ""        # optional QKeySequence string (e.g. "B", "Shift+E")
     is_default: bool = False
     commit_on: Optional[str] = "release"   # "press" | "release" | None
+    # Filled by tool_loader from tool.json `permissions`. Frozenset of
+    # strings from KNOWN_PERMISSIONS. Empty by default — explicit grant
+    # required for clipboard / web / filesystem / subprocess access.
+    _granted_permissions: frozenset = frozenset()
 
     def __init__(self, ctx: Optional["ToolContext"] = None):
         # Old-style tools call super().__init__(ctx); new-style tools call
@@ -271,6 +278,15 @@ class Tool:
         if ctx is not None:
             self.ctx = ctx
         self._last_pt: Optional[Tuple[int, int]] = None
+
+    def has_permission(self, name: str) -> bool:
+        """Return True if this tool was granted capability `name`.
+
+        Host code at clipboard / network / fs / subprocess call sites
+        should check via this method and refuse access (or fall back
+        to a safe default) when the permission is missing.
+        """
+        return str(name).strip().lower() in self._granted_permissions
 
     # ------------------------------------------------------------------
     # Lifecycle

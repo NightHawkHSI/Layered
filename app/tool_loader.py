@@ -10,27 +10,46 @@ Layout:
 Manifest schema (all keys optional except `name`):
 
     {
-        "name":     "Brush",       # display name (key in tools dict)
-        "id":       "brush",          # stable internal ID; falls back to folder name
-        "class":    "BrushTool",      # class name in app.tools (used when no tool.py)
-        "category": "Basic",          # override the parent folder name (optional)
-        "icon":     "🖌"              # optional glyph shown on the tool button
+        "name":        "Brush",       # display name (key in tools dict)
+        "id":          "brush",       # stable internal ID; falls back to folder name
+        "class":       "BrushTool",   # class name in app.tools (used when no tool.py)
+        "category":    "Basic",       # override the parent folder name (optional)
+        "icon":        "🖌",          # optional glyph shown on the tool button
+        "permissions": ["clipboard"]  # capabilities the tool may use (see KNOWN_PERMISSIONS)
     }
 
 When `tool.py` is present alongside `tool.json` the loader imports it
 via importlib and expects a top-level ``TOOL_CLASS`` attribute.
 Discovery is best-effort: a malformed entry is skipped, the rest still
 load.
+
+Permissions are stored as a frozenset on the instance via
+``Tool._granted_permissions`` and queried with ``Tool.has_permission``.
+The host enforces them at API boundaries (clipboard, network, fs);
+plugins that bypass the boundary in raw PyQt are out of scope of the
+sandbox — Python cannot truly sandbox in-process code.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Tuple
 
 from . import tools as tools_mod
+
+_log = logging.getLogger("layered.plugin.tool")
+
+# Capabilities a plugin may declare. The host enforces these at the
+# corresponding API call sites (ctx hooks / clipboard / network / fs).
+KNOWN_PERMISSIONS: frozenset[str] = frozenset({
+    "clipboard",   # read/write system clipboard
+    "web",         # outbound HTTP / URL fetch
+    "filesystem",  # read/write outside project sandbox
+    "subprocess",  # spawn external processes
+})
 
 
 def _slug(text: str) -> str:
@@ -103,6 +122,30 @@ def load_tools(brushes_dir: Path, ctx) -> Tuple[dict[str, Any], dict[str, list[s
                     inst.icon = icon
                 except Exception:
                     pass
+            # Permissions — validate against KNOWN_PERMISSIONS. Unknown
+            # entries are dropped with a warning; the tool still loads
+            # with whatever subset was recognised.
+            raw_perms = meta.get("permissions") or []
+            if not isinstance(raw_perms, (list, tuple)):
+                _log.warning(
+                    "%s: 'permissions' must be a list (got %s); ignoring",
+                    tool_dir, type(raw_perms).__name__,
+                )
+                raw_perms = []
+            granted: set[str] = set()
+            for p in raw_perms:
+                key = str(p).strip().lower()
+                if key in KNOWN_PERMISSIONS:
+                    granted.add(key)
+                else:
+                    _log.warning(
+                        "%s: unknown permission %r (allowed: %s)",
+                        tool_dir, p, sorted(KNOWN_PERMISSIONS),
+                    )
+            try:
+                inst._granted_permissions = frozenset(granted)
+            except Exception:
+                pass
             tools_out[display_name] = inst
             cats_out.setdefault(effective_cat, []).append(display_name)
     return tools_out, cats_out

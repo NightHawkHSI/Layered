@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect
 from PyQt6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
     QLineEdit,
     QMenu,
     QPushButton,
@@ -40,6 +42,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyle,
     QTextEdit,
     QPlainTextEdit,
     QToolButton,
@@ -60,7 +63,9 @@ _ACCENT = "#1a73e8"
 _ACCENT_BG = "rgba(26,115,232,0.15)"
 _HOVER_BG = "rgba(255,255,255,0.06)"
 
-_COLUMNS = 3
+_COLUMNS = 3  # kept for compat; FlowLayout now drives wrapping
+_BTN_MIN = 44
+_BTN_MAX = 96
 
 _PANEL_QSS = f"""
 QPushButton[tool_btn="true"],
@@ -130,6 +135,96 @@ TOOL_SHORTCUTS: dict[str, str] = {}
 
 
 # -----------------------------------------------------------------------------
+# Flow Layout — wraps children to next row when width runs out
+# -----------------------------------------------------------------------------
+
+class _FlowLayout(QLayout):
+    """Left-to-right wrapping layout. Reflows on width changes so the
+    tool grid auto-arranges no matter where the dock is docked or how
+    narrow the user makes it.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 margin: int = 0, hspacing: int = 8, vspacing: int = 8):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self._hspace = hspacing
+        self._vspace = vspacing
+        self._items: list[QLayoutItem] = []
+
+    def __del__(self):
+        while self._items:
+            self._items.pop()
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append(item)
+
+    def horizontalSpacing(self) -> int:
+        return self._hspace
+
+    def verticalSpacing(self) -> int:
+        return self._vspace
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        m = self.contentsMargins()
+        eff = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x = eff.x()
+        y = eff.y()
+        line_height = 0
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._hspace
+            if next_x - self._hspace > eff.right() and line_height > 0:
+                x = eff.x()
+                y = y + line_height + self._vspace
+                next_x = x + hint.width() + self._hspace
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + m.bottom()
+
+
+# -----------------------------------------------------------------------------
 # Tool Button
 # -----------------------------------------------------------------------------
 
@@ -144,10 +239,19 @@ class _ToolBtn(QPushButton):
 
         self.setCheckable(True)
 
-        self.setMinimumSize(84, 84)
-        self.setMaximumHeight(84)
+        self.setMinimumSize(_BTN_MIN, _BTN_MIN)
+        self.setMaximumSize(_BTN_MAX, _BTN_MAX)
+
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Preferred)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def sizeHint(self) -> QSize:
+        return QSize(_BTN_MAX, _BTN_MAX)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(_BTN_MIN, _BTN_MIN)
 
     def paintEvent(self, event):
 
@@ -211,6 +315,8 @@ class ToolPanel(QWidget):
 
         self.setStyleSheet(_PANEL_QSS)
 
+        self.setMinimumWidth(_BTN_MAX + 16)
+
         self._build_ui()
 
         for name in tools.keys():
@@ -236,6 +342,13 @@ class ToolPanel(QWidget):
 
         self._active_label.setObjectName("activeToolLabel")
 
+        self._active_label.setWordWrap(True)
+
+        self._active_label.setMinimumWidth(0)
+
+        self._active_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Preferred)
+
         outer.addWidget(self._active_label)
 
         # search
@@ -244,7 +357,12 @@ class ToolPanel(QWidget):
 
         self.search.setObjectName("toolSearch")
 
-        self.search.setPlaceholderText("Search tools...")
+        self.search.setPlaceholderText("Search...")
+
+        self.search.setMinimumWidth(0)
+
+        self.search.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                  QSizePolicy.Policy.Fixed)
 
         self.search.textChanged.connect(self._filter_tools)
 
@@ -258,19 +376,28 @@ class ToolPanel(QWidget):
 
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
         outer.addWidget(scroll)
 
         # content
 
         self._content = QWidget()
 
+        cp = QSizePolicy(QSizePolicy.Policy.Preferred,
+                         QSizePolicy.Policy.Preferred)
+        cp.setHeightForWidth(True)
+        self._content.setSizePolicy(cp)
+
         scroll.setWidget(self._content)
 
         self._layout = QVBoxLayout(self._content)
 
-        self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setContentsMargins(0, 0, 0, 0)
 
-        self._layout.setSpacing(14)
+        self._layout.setSpacing(10)
 
         # Brush settings live in the per-tool settings toolbar
         # (`MainWindow._tool_settings_bar`), populated from each Tool's
@@ -317,24 +444,18 @@ class ToolPanel(QWidget):
             self._layout.addWidget(header)
 
             grid_host = QWidget()
+            gp = QSizePolicy(QSizePolicy.Policy.Preferred,
+                             QSizePolicy.Policy.Preferred)
+            gp.setHeightForWidth(True)
+            grid_host.setSizePolicy(gp)
 
-            grid = QGridLayout(grid_host)
+            grid = _FlowLayout(grid_host, margin=0, hspacing=8, vspacing=8)
 
-            grid.setContentsMargins(0, 0, 0, 0)
-
-            grid.setHorizontalSpacing(8)
-
-            grid.setVerticalSpacing(8)
-
-            for i, name in enumerate(valid):
+            for name in valid:
 
                 btn = self._buttons[name]
 
-                grid.addWidget(
-                    btn,
-                    i // _COLUMNS,
-                    i % _COLUMNS,
-                )
+                grid.addWidget(btn)
 
             self._layout.addWidget(grid_host)
 
@@ -595,14 +716,15 @@ class ToolPanel(QWidget):
                 w.setParent(None)
                 w.deleteLater()
         grid_host = QWidget()
-        grid = QGridLayout(grid_host)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(8)
-        for i, n in enumerate(self._tool_order):
+        gp = QSizePolicy(QSizePolicy.Policy.Preferred,
+                         QSizePolicy.Policy.Preferred)
+        gp.setHeightForWidth(True)
+        grid_host.setSizePolicy(gp)
+        grid = _FlowLayout(grid_host, margin=0, hspacing=8, vspacing=8)
+        for n in self._tool_order:
             btn = self._buttons.get(n)
             if btn is None:
                 continue
-            grid.addWidget(btn, i // _COLUMNS, i % _COLUMNS)
+            grid.addWidget(btn)
         self._layout.addWidget(grid_host)
         self._layout.addStretch(1)

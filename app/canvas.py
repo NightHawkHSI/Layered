@@ -53,6 +53,7 @@ class Canvas(QWidget):
         self._dirty = True
         self._panning = False
         self._right_active = False
+        self._tablet_stroke_active = False
         self.selection_provider = None  # callable -> Optional[Selection]
         # Caches keyed by the mask object itself — holding a strong ref
         # prevents Python from recycling the id() onto a new mask after
@@ -294,6 +295,14 @@ class Canvas(QWidget):
         except Exception:
             pass
 
+    def _set_pressure(self, value):
+        ctx = getattr(self.tool, "ctx", None)
+        if ctx is not None:
+            try:
+                ctx.pressure = value
+            except Exception:
+                pass
+
     def _swap_tool_colors(self):
         ctx = getattr(self.tool, "ctx", None)
         if ctx is None:
@@ -310,6 +319,11 @@ class Canvas(QWidget):
             return
         if self.tool is None or self.layer_stack.active is None:
             return
+        # Qt sends synthetic mouse events alongside tablet events; the
+        # tablet handler accepts and consumes them, but if a real mouse
+        # press lands here we must clear any leftover tablet pressure.
+        if not self._tablet_stroke_active:
+            self._set_pressure(None)
         if e.button() == Qt.MouseButton.RightButton:
             self._right_active = True
             self._swap_tool_colors()
@@ -353,6 +367,82 @@ class Canvas(QWidget):
         if e.button() == Qt.MouseButton.RightButton and self._right_active:
             self._swap_tool_colors()
             self._right_active = False
+
+    def tabletEvent(self, e):  # noqa: N802
+        """Route QTabletEvent through the active tool with pressure data.
+
+        Qt also generates synthetic mouse events for tablet input; we
+        accept() here so the mouse path doesn't double-fire the stroke.
+        """
+        from PyQt6.QtCore import QEvent
+        et = e.type()
+        if self.tool is None or self.layer_stack.active is None:
+            e.ignore()
+            return
+
+        try:
+            pos = e.position().toPoint()
+        except Exception:
+            try:
+                pos = e.posF().toPoint()
+            except Exception:
+                pos = e.pos()
+        pressure = float(e.pressure())
+
+        if et == QEvent.Type.TabletPress:
+            btn = e.button()
+            if btn == Qt.MouseButton.RightButton:
+                self._right_active = True
+                self._swap_tool_colors()
+            elif btn not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+                e.ignore()
+                return
+            self._tablet_stroke_active = True
+            self._set_pressure(pressure)
+            self._update_modifiers(e)
+            cx, cy = self._to_canvas_coords(pos)
+            self.tool.press(self.layer_stack.active, cx, cy)
+            self.refresh()
+            self.layer_changed.emit()
+            if getattr(self.tool, "commit_on", "release") == "press":
+                self.action_committed.emit(self.tool.name)
+            e.accept()
+            return
+
+        if et == QEvent.Type.TabletMove:
+            if not self._tablet_stroke_active:
+                e.ignore()
+                return
+            self._set_pressure(pressure)
+            self._update_modifiers(e)
+            cx, cy = self._to_canvas_coords(pos)
+            self.tool.move(self.layer_stack.active, cx, cy)
+            self.refresh()
+            self.layer_changed.emit()
+            e.accept()
+            return
+
+        if et == QEvent.Type.TabletRelease:
+            if not self._tablet_stroke_active:
+                e.ignore()
+                return
+            self._set_pressure(pressure)
+            self._update_modifiers(e)
+            cx, cy = self._to_canvas_coords(pos)
+            self.tool.release(self.layer_stack.active, cx, cy)
+            self.refresh()
+            self.layer_changed.emit()
+            if getattr(self.tool, "commit_on", "release") == "release":
+                self.action_committed.emit(self.tool.name)
+            if e.button() == Qt.MouseButton.RightButton and self._right_active:
+                self._swap_tool_colors()
+                self._right_active = False
+            self._tablet_stroke_active = False
+            self._set_pressure(None)
+            e.accept()
+            return
+
+        e.ignore()
 
     def wheelEvent(self, e):  # noqa: N802
         delta = e.angleDelta().y()

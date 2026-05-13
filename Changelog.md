@@ -1,5 +1,181 @@
 # Changelog
 
+## 2026-05-13 — Tool Panel Flow Layout & Shrink-to-Fit
+
+### Changed
+1. **`app/ui/tool_panel.py` — buttons auto-arrange + shrink so the dock
+   works at any width and position.** Replaced fixed 3-column
+   `QGridLayout` with a new in-file `_FlowLayout(QLayout)` that wraps
+   children left-to-right when width runs out (`hasHeightForWidth=True`,
+   `heightForWidth` reports stacked height for the given viewport). Used
+   in both `set_tool_groups()` and `_reflow_grid()`; the `_COLUMNS`
+   constant is kept only for backwards compatibility.
+
+2. **`_ToolBtn` — shrinkable size policy.** Min `(44, 44)`, max
+   `(96, 96)`; `sizeHint`/`minimumSizeHint` return those bounds so flow
+   wrap math is stable. Was previously locked at 84×84.
+
+3. **`ToolPanel._build_ui()` — narrow-dock friendly chrome.** Active
+   label gets `setWordWrap(True)` + `QSizePolicy.Ignored` horizontal so
+   long tool names don't push the panel wide. Search field placeholder
+   shortened to "Search..." and given `Ignored` horizontal policy.
+   `QScrollArea.horizontalScrollBarPolicy = ScrollBarAlwaysOff` forces
+   wrap rather than horizontal pan. Content margins `8 → 0`, spacing
+   `14 → 10`.
+
+4. **`ToolPanel.__init__` — `setMinimumWidth(_BTN_MAX + 16)` (112 px).**
+   Guarantees at least one full-size button column plus scrollbar room
+   regardless of where the dock is placed.
+
+5. **`grid_host` widgets — `heightForWidth` size policy.** Both grouped
+   and ungrouped paths set `QSizePolicy.setHeightForWidth(True)` on the
+   host so the outer `QVBoxLayout` propagates the flow layout's
+   width-dependent height up through the scroll area.
+
+## 2026-05-13 — New Brush Categories, Tablet Pressure, Sandbox Permissions, Layer Masks, Adjustment Layers, Smart Objects, Tile + GPU Render
+
+### Added
+1. **`Plugins/Brushes/Pixel Art Kit/` — new brush category for pixel art.**
+   Three tools: **Pixel Pencil** (`N`) — hardness 1.0, integer coords, 1-px
+   spacing; **Pixel Eraser** (`Shift+E`) — hard aliased erase via
+   `_stamp_erase`; **Pixel Line** (`Shift+L`) — Bresenham line with snapshot
+   + redraw on `move`, Shift snaps to 45° octants. All three share a
+   single-size cached `_brush_mask(size, 1.0)` and short-circuit on
+   integer coordinates so output is always grid-aligned (no anti-aliased
+   half-pixel bleed).
+
+2. **`Plugins/Brushes/Basic/Fill/` — flood fill (paint bucket) tool (`F`).**
+   `commit_on = "press"`; reads pixel under cursor, returns early if
+   target color already equals primary, snapshots the layer, calls
+   `ImageDraw.floodfill(thresh=tolerance)` and then
+   `_clip_layer_to_selection(layer, ctx, before)` so the fill is bounded
+   by the active selection (everything outside the marquee is restored
+   from the snapshot). Tolerance slider 0–255.
+
+3. **`Plugins/Brushes/Basic/` — four new round/flat brushes.**
+   **Hard Round** (`Shift+H`) — hardness 1.0, fixed size, opacity +
+   spacing sliders; for blocking-in and UI outlines. **Soft Round**
+   (`Shift+S`) — hardness 0.0, pressure-opacity dynamic; reads
+   `ctx.pressure` first, falls back to stroke-velocity mapping
+   (`50 px/s → 1.0`, `1500 px/s → 0.15`). **Variable Inker** (`Shift+I`)
+   — hardness 1.0, pressure-size dynamic with `SIZE_MIN_FRAC = 0.15`,
+   per-stamp mask cache keyed by integer size. **Chisel Flat**
+   (`Shift+C`) — rotated rectangular mask built by `_flat_mask(w, h,
+   angle)` via `ImageDraw.polygon` over rotated corners; W / H / Angle
+   / Opacity sliders, cache invalidated on any setting change.
+
+4. **`app/canvas.py` + `app/tools.py` — Tablet/Stylus pressure pipeline.**
+   New `Canvas.tabletEvent(e)` routes `QEvent.Type.TabletPress` /
+   `TabletMove` / `TabletRelease` through the active tool, calling
+   `self._set_pressure(e.pressure())` before each press/move/release.
+   `_tablet_stroke_active` guard discards stray `TabletMove`s arriving
+   without a preceding press, accepts events to suppress Qt's synthetic
+   mouse twin, and resets the pressure to `None` on release.
+   `mousePressEvent` clears stale tablet pressure when no tablet stroke
+   is active so a mouse user never inherits the last stylus value.
+   `ToolContext.pressure: Optional[float] = None` plumbs the value to
+   brushes; Soft Round and Variable Inker consume it directly, mouse
+   strokes fall back to velocity mapping.
+
+5. **`app/tool_loader.py` + `app/tools.py` — plugin permission sandbox.**
+   `KNOWN_PERMISSIONS = {"clipboard", "web", "filesystem", "subprocess"}`
+   defines the four capabilities a plugin can declare via a
+   `"permissions": [...]` array in `tool.json`. `load_tools` validates
+   each entry (`logging.warning` on unknown / wrong-type), stores the
+   accepted subset as `inst._granted_permissions: frozenset`, and the
+   `Tool.has_permission(name)` method lets host code at clipboard /
+   network / fs / subprocess call sites gate access. Empty default — a
+   tool that omits `permissions` gets nothing.
+
+6. **`app/layer.py` — non-destructive layer masks.**
+   `Layer.mask: Optional[Image.Image]` (mode `"L"`) and
+   `Layer.mask_enabled: bool = True`. `LayerStack._positioned` multiplies
+   `image.alpha` by `mask` (resized if size differs) before pasting at
+   `layer.offset` — the existing fast path that returned the bare image
+   now defers to the mask branch when one is present. Helpers on Layer:
+   `add_mask(reveal_all=True/False)`, `remove_mask()`, `apply_mask()`
+   (bakes the mask into the alpha channel and clears the attribute).
+   `resize_canvas` pads the mask with black (hidden) outside the
+   original area; `merge_down` / `merge_up` clear the destination layer's
+   mask after merge so the baked composite isn't double-masked.
+
+7. **`app/adjustments.py` + `app/layer.py` — non-destructive adjustment
+   layers.** Six built-in filters in the `ADJUSTMENTS` registry:
+   *Brightness, Contrast, Invert, Grayscale, Levels* (black / white /
+   gamma) and *Hue/Saturation* (hue shift / saturation scale / lightness
+   add). Each is `(callable, default_params_dict)`. `Layer.adjustment:
+   Optional[str]` + `Layer.adjustment_params: dict` mark a layer as an
+   adjustment; in `_blend_onto`, adjustment layers skip the pixel-stamp
+   path entirely and call `apply_adjustment(base, name, params)` on the
+   running composite, then `_blend_adjustment_result` composites the
+   filtered image back through the layer's mask × opacity. New helper
+   `LayerStack.add_adjustment(name, params, label)` constructs the
+   layer with default params merged.
+
+8. **`app/layer.py` — Smart Objects.**
+   `Layer.source_path: Optional[str]` + `Layer.source_mtime:
+   Optional[float]` mark a layer as a smart object. `_rasterize_source`
+   opens the source — image files via `Image.open(...).convert("RGBA")`,
+   nested `.layered` projects via `project_io.load_project` plus
+   `stack.composite()` (centred into the host canvas if dimensions
+   differ). `LayerStack.add_smart_object(path, name)` rasterizes
+   immediately and records the source mtime;
+   `LayerStack.refresh_smart_objects()` walks all layers, compares
+   `Path(src).stat().st_mtime` to the recorded value, re-rasterizes when
+   newer, returns the number updated, and invalidates the below cache.
+
+9. **`app/tile_renderer.py` — 256×256 tile compositor with dirty
+   tracking.** `TileRenderer(stack, tile_size=256)` owns a `_full_canvas`
+   PIL image and a `_tiles: dict[(tx, ty), _TileCache]` keyed by tile
+   coords. `mark_dirty(rect)` translates a canvas-space rect into the
+   set of overlapping tile coords via bit-pattern division;
+   `mark_all_dirty()` re-queues every tile (size-aware via `cols` /
+   `rows`); `invalidate()` drops everything. A per-tile
+   `layer_signature` tuple records `(id, image-id, visible, opacity,
+   blend_mode, offset, mask-id, mask_enabled, adjustment,
+   adjustment_params)` so any structural change forces a full rebuild.
+   `render()` re-blends only dirty tiles via `_render_tile(tx, ty)`,
+   which iterates layers and calls `_blend_layer_onto_tile`: positioned
+   image is cropped to the tile rect, `Image.alpha_composite` runs in
+   Normal mode, the numpy blend kernel runs for non-Normal modes, and
+   adjustment layers read base / mask / opacity through the tile-sized
+   region. Output round-trips equal to `stack.composite()` (verified
+   in-process).
+
+10. **`app/gpu_renderer.py` — moderngl GPU compositor (opt-in).**
+    `gpu_available()` gates on a soft `import moderngl`. `GpuRenderer`
+    builds a standalone GL context, a fullscreen-quad VAO, two
+    ping-pong RGBA8 framebuffers, and a single fragment program that
+    branches on `u_mode` to cover all nine blend modes plus Porter-Duff
+    "over" alpha math. Per-layer texture cache is keyed by
+    `id(layer.image)`; mask layers upload a canvas-sized "L" texture
+    and the shader multiplies `top.a` by `mask.r` when `u_use_mask =
+    1`. Adjustment layers fall back to a CPU pass that reads the source
+    FBO, runs `apply_adjustment`, and writes the result back into the
+    destination texture with `texture.write` (cheap enough since
+    adjustments are rare). `release()` drops every texture, FBO, VAO,
+    program and the context itself. Verified against the CPU compositor
+    — Multiply blend matches within `±1/255` quantization.
+
+### Changed
+- **`requirements.txt`** — added `moderngl>=5.10` (GPU compositor) and
+  `numba>=0.59` (JIT blend kernel, was already a soft import) so the
+  build venv installs both by default.
+- **`build.bat`** — PyInstaller call now includes `--collect-all
+  moderngl` and `--collect-all numba` so their runtime hooks and
+  bundled DLLs ship in `_internal/`.
+
+### Notes
+- Pressure pipeline reads `ctx.pressure` first; brushes that ignore
+  pressure (Hard Round, Pixel Pencil, etc.) are unaffected. Mouse-only
+  strokes fall back to a velocity → pressure mapping inside each
+  pressure-aware brush — no host plumbing required.
+- Tile renderer and GPU renderer are independent of the legacy
+  `LayerStack.composite()` path. They share the same blend math, masks,
+  and adjustments, but the canvas hot path still calls `composite()`
+  until a host wiring change opts in. Both engines are usable from
+  scripts today.
+
 ## 2026-05-10 — Plugin Hot-Reload, Dark Palette, Numba Composite & Brush HUD
 
 ### Added
