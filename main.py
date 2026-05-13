@@ -17,7 +17,7 @@ def _emergency_crash(exc_type, exc_value, exc_tb) -> Path:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = err_dir / f"startup-crash-{ts}.txt"
     with path.open("w", encoding="utf-8") as f:
-        f.write(f"Layered startup crash — {datetime.now().isoformat()}\n")
+        f.write(f"Layered startup crash - {datetime.now().isoformat()}\n")
         f.write(f"Python: {sys.version}\n")
         f.write(f"Platform: {sys.platform}\n")
         f.write("=" * 72 + "\n")
@@ -26,21 +26,17 @@ def _emergency_crash(exc_type, exc_value, exc_tb) -> Path:
 
 
 def _apply_dark_palette(app) -> None:
-    """Install a modern dark Fusion palette + base QSS.
-
-    Palette is set as the application palette so child widgets inherit dark
-    colors. _apply_accent (in main_window) tweaks Highlight on top of this.
-    """
+    """Install a modern dark Fusion palette + base QSS."""
     from PyQt6.QtGui import QColor, QPalette
 
-    bg        = QColor(30, 31, 34)      # window background
-    base      = QColor(24, 25, 28)      # text input / list bg
-    alt_base  = QColor(36, 38, 42)      # alternating row
-    surface   = QColor(43, 45, 49)      # buttons, panels
+    bg        = QColor(30, 31, 34)
+    base      = QColor(24, 25, 28)
+    alt_base  = QColor(36, 38, 42)
+    surface   = QColor(43, 45, 49)
     border    = QColor(60, 63, 68)
     text      = QColor(220, 221, 222)
     text_dim  = QColor(150, 151, 152)
-    highlight = QColor(74, 144, 226)    # default accent — overridden by prefs
+    highlight = QColor(74, 144, 226)
 
     p = QPalette()
     p.setColor(QPalette.ColorRole.Window, bg)
@@ -132,15 +128,13 @@ def _resolve_icon_paths() -> tuple[Path, Path]:
 
 
 def main() -> int:
+    # Light imports only. Heavy stuff (app.main_window which pulls PIL,
+    # numpy, plugin_loader, UI panels) is deferred until the shell window
+    # is on screen.
     try:
+        from PyQt6.QtCore import QTimer
         from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
-
-        from app.logger import get_logger, install_excepthook
-        try:
-            from app.splash import SplashScreen
-        except Exception:
-            SplashScreen = None  # type: ignore[assignment,misc]
     except Exception:
         report = _emergency_crash(*sys.exc_info())
         msg = (
@@ -153,50 +147,46 @@ def main() -> int:
             traceback.print_exc()
         return 2
 
-    install_excepthook()
-    log = get_logger("main")
-    log.info("Layered starting up")
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("Layered")
     app.setOrganizationName("Layered")
-
     _apply_dark_palette(app)
 
     ICON_PATH, ICON_PNG_PATH = _resolve_icon_paths()
+    app_icon = None
     if ICON_PATH.exists():
-        app.setWindowIcon(QIcon(str(ICON_PATH)))
+        app_icon = QIcon(str(ICON_PATH))
     elif ICON_PNG_PATH.exists():
-        app.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
+        app_icon = QIcon(str(ICON_PNG_PATH))
+    if app_icon is not None:
+        app.setWindowIcon(app_icon)
 
-    icon_png = ICON_PNG_PATH if ICON_PNG_PATH.exists() else None
-    splash = SplashScreen(icon_png) if SplashScreen is not None else None
-    if splash is not None:
-        splash.show()
-        splash.set_progress(3, "Initializing Qt runtime...")
-        app.processEvents()
-        splash.set_progress(8, "Loading modules...")
-        app.processEvents()
+    holder: dict = {"window": None}
 
-    try:
-        from app.main_window import MainWindow
-        if splash is not None:
-            splash.set_progress(15, "Preparing workspace...")
-            app.processEvents()
-        window = MainWindow(splash=splash)
-        if splash is not None:
-            splash.set_progress(100, "Ready — welcome back")
-            splash.finish(window)
-        window.show()
-    except Exception:
-        if splash is not None:
-            splash.hide()
-        log.critical("Failed to construct main window:\n%s", traceback.format_exc())
-        raise
+    def _bring_up_main() -> None:
+        try:
+            from app.logger import get_logger, install_excepthook
+            install_excepthook()
+            log = get_logger("main")
+            log.info("Layered starting up")
+            from app.main_window import MainWindow
+            win = MainWindow()
+            win.show()
+            holder["window"] = win
+        except Exception:
+            try:
+                report = _emergency_crash(*sys.exc_info())
+                msg = f"Layered failed to start. Crash report: {report}\n"
+                if sys.stderr is not None:
+                    sys.stderr.write(msg)
+            except Exception:
+                traceback.print_exc()
+            app.quit()
+
+    QTimer.singleShot(0, _bring_up_main)
 
     rc = app.exec()
-    log.info("Layered exiting with code %s", rc)
     return rc
 
 

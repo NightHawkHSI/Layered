@@ -53,10 +53,15 @@ def _configure() -> None:
     file_handler.setFormatter(logging.Formatter(_FORMAT))
     root.addHandler(file_handler)
 
-    stream_handler = logging.StreamHandler(sys.stderr)
-    stream_handler.setLevel(logging.INFO)
-    stream_handler.setFormatter(logging.Formatter(_FORMAT))
-    root.addHandler(stream_handler)
+    # Skip stderr handler when stderr is unavailable (PyInstaller --windowed
+    # builds set sys.stderr to None — attaching a StreamHandler to it makes
+    # every log call raise inside logging's emit() and get suppressed, which
+    # adds overhead and confuses crash reports).
+    if sys.stderr is not None:
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(logging.Formatter(_FORMAT))
+        root.addHandler(stream_handler)
 
     _configured = True
 

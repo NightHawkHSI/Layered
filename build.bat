@@ -101,16 +101,23 @@ if exist "%ROOT%\Icon.ico" set ICONARG=--icon="%ROOT%\Icon.ico"
 call :stage 75 "Compilation"
 echo    %W%[%R%WAIT%W%] %Y%PyInstaller is freezing Layered.exe...%N%
 if exist "%BUILDTMP%" rmdir /s /q "%BUILDTMP%"
-"%PY_BIN%" -m PyInstaller --noconfirm --onefile --windowed --name Layered ^
+REM --onedir avoids the ~5-6s --onefile self-extract on every cold launch.
+"%PY_BIN%" -m PyInstaller --noconfirm --onedir --windowed --name Layered ^
+    --contents-directory _internal ^
     --collect-submodules app ^
     --collect-submodules PIL ^
     --collect-all PyQt6 ^
     %ICONARG% ^
-    --distpath "%RELEASE%" ^
+    --distpath "%BUILDTMP%\dist" ^
     --workpath "%BUILDTMP%\build" ^
     --specpath "%BUILDTMP%" ^
     "%ROOT%\main.py" >> "%LOGFILE%" 2>&1
 if errorlevel 1 goto :fail_pyinstaller
+
+REM Flatten dist\Layered\* up into Release so Layered.exe sits at top.
+echo    %B%-%N% Flattening onedir output into %Y%Release%N%
+robocopy "%BUILDTMP%\dist\Layered" "%RELEASE%" *.* /E /MOVE /NFL /NDL /NJH /NJS /NP >> "%LOGFILE%" 2>&1
+if %ERRORLEVEL% GEQ 8 goto :fail_pyinstaller
 
 call :stage 95 "Final Assembly"
 if exist "%ROOT%\Plugins" (

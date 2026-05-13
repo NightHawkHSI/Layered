@@ -115,9 +115,8 @@ class NewCanvasDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, width: int = 1024, height: int = 768, splash=None):
+    def __init__(self, width: int = 1024, height: int = 768):
         super().__init__()
-        self._splash = splash
         self.log = get_logger("ui")
         self.setWindowTitle("Layered")
         self.resize(1400, 900)
@@ -126,17 +125,34 @@ class MainWindow(QMainWindow):
         elif ICON_PNG_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PNG_PATH)))
 
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage("Starting...")
+
+        # Tripped at the end of _boot_full so closeEvent (and similar) can
+        # short-circuit cleanly if the user closes the window before deferred
+        # construction has populated all the attributes they touch.
+        self._booted = False
+
+        # Defer heavy construction so the empty window can paint immediately.
+        # main.py calls self.show() right after __init__; Qt's event loop
+        # then dispatches the QTimer.singleShot(0, ...) on the first idle
+        # tick AFTER the first paint, giving paint.net-style fast launch.
+        self._boot_width = width
+        self._boot_height = height
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._boot_full)
+
+    def _boot_full(self) -> None:
+        from PyQt6.QtCore import QTimer
+        width = self._boot_width
+        height = self._boot_height
+        del self._boot_width, self._boot_height
+
         self.prefs = Preferences(PREFS_PATH)
         self._apply_accent(self.prefs.accent_color)
 
-        # Always start with a blank project so the window can paint
-        # immediately. Session restore is deferred to first idle tick.
         self.projects: list[Project] = [Project.blank(width, height)]
         self._pending_session_restore = bool(self.prefs.restore_session)
-        if self._splash:
-            import time
-            self._splash._shown_at = time.monotonic()
-            self._splash.set_progress(15, "Creating blank project...")
         self.active_project: int = 0
         self._last_export_dir: Optional[Path] = None
         self._last_open_dir: Optional[Path] = None
@@ -196,9 +212,8 @@ class MainWindow(QMainWindow):
         self.canvas.action_committed.connect(self._on_action_committed)
         self.canvas.images_dropped.connect(self._on_images_dropped)
         self.setCentralWidget(self.canvas)
-        if self._splash:
-            w, h = self.current().stack.width, self.current().stack.height
-            self._splash.set_progress(35, f"Building canvas ({w}x{h})...")
+        w, h = self.current().stack.width, self.current().stack.height
+        self.statusBar().showMessage(f"Canvas {w}x{h}")
 
         # --- panels ---
         self.layer_panel = LayerPanel(self.current().stack)
@@ -289,12 +304,7 @@ class MainWindow(QMainWindow):
         self.project_tabs.new_requested.connect(self._on_new)
         self._add_dock("Projects", self.project_tabs, Qt.DockWidgetArea.BottomDockWidgetArea)
 
-        self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Ready")
-        if self._splash:
-            self._splash.set_progress(45, "Wiring layer + history panels...")
-            self._splash.set_progress(55, "Wiring tools, colors, text...")
-            self._splash.set_progress(62, "Wiring console + project tabs...")
+        self.statusBar().showMessage("Panels ready")
 
         # --- plugins ---
         self._plugin_event_listeners: dict[str, list] = {}
@@ -321,11 +331,9 @@ class MainWindow(QMainWindow):
         self._restore_layout()
         self._install_hud_picker()
         self.log.info("Main window initialized: %dx%d", width, height)
+        self._booted = True
         # Defer plugin discovery + import so the window is visible before
         # importlib overhead runs (biggest contributor to slow cold start).
-        if self._splash:
-            self._splash.set_progress(72, "Building menus...")
-            self._splash.set_progress(78, "Discovering plugins...")
         QTimer.singleShot(0, self._deferred_plugin_init)
 
     def _install_hud_picker(self) -> None:
@@ -340,8 +348,7 @@ class MainWindow(QMainWindow):
         """Load plugins on the first idle tick so the window paints first."""
         if getattr(self, "_pending_session_restore", False):
             self._pending_session_restore = False
-            if self._splash:
-                self._splash.set_progress(80, "Restoring session...")
+            self.statusBar().showMessage("Restoring session...")
             try:
                 restored = load_session(SESSION_DIR)
             except Exception as exc:
@@ -353,14 +360,12 @@ class MainWindow(QMainWindow):
                 self._bind_current()
                 self._refresh_tabs()
                 self.log.info("Restored %d project(s) from session", len(restored))
-        if self._splash:
-            self._splash.set_progress(82, "Importing plugin modules...")
+        self.statusBar().showMessage("Loading plugins...")
         qapp = QApplication.instance()
 
         def _on_plugin_progress(i: int, total: int, name: str) -> None:
-            if self._splash and total > 0:
-                pct = 82 + int((i / total) * 6)
-                self._splash.set_progress(pct, f"Loading {name}...")
+            if total > 0:
+                self.statusBar().showMessage(f"Loading plugin {i}/{total}: {name}")
             if qapp is not None:
                 qapp.processEvents()
 
@@ -368,9 +373,8 @@ class MainWindow(QMainWindow):
             PLUGINS_DIR, self.current().stack, self.tool_ctx, self.canvas,
             host=self, on_progress=_on_plugin_progress,
         )
-        if self._splash:
-            n = len(self.plugins.tools) + len(self.plugins.filters) + len(self.plugins.actions)
-            self._splash.set_progress(88, f"Registering {n} plugin item(s)...")
+        n = len(self.plugins.tools) + len(self.plugins.filters) + len(self.plugins.actions)
+        self.statusBar().showMessage(f"Registering {n} plugin item(s)...")
         for name, tool in self.plugins.tools.items():
             self.tools[name] = tool
             tid = getattr(tool, "tool_id", "")
@@ -380,8 +384,7 @@ class MainWindow(QMainWindow):
             self.tool_panel.set_tool_shortcut(name, getattr(tool, "shortcut", ""))
             self.tool_panel.add_tool_button(name)
 
-        if self._splash:
-            self._splash.set_progress(92, "Loading brush packs...")
+        self.statusBar().showMessage("Loading brush packs...")
         # Load Plugins/Brushes/<Group>/<Tool>/tool.py — populate Tool Panel
         # with one [Group ▼] split-button per group, sub-tools in dropdown.
         brush_tools, brush_cats = load_brush_tools(PLUGINS_DIR / "Brushes", self.tool_ctx)
@@ -419,21 +422,8 @@ class MainWindow(QMainWindow):
             "Plugins loaded: %d tool(s), %d filter(s), %d action(s)",
             len(self.plugins.tools), len(self.plugins.filters), len(self.plugins.actions),
         )
-        if self._splash:
-            import time
-            n_brush = len(brush_tools)
-            self._splash.set_progress(96, f"Finalizing — {n_brush} brush(es) ready")
-            self._splash.set_progress(100, "Ready — happy painting")
-            elapsed_ms = int((time.monotonic() - getattr(self._splash, "_shown_at", 0)) * 1000)
-            remaining_ms = max(0, 3000 - elapsed_ms)
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(remaining_ms, self._finish_splash)
-
-    def _finish_splash(self) -> None:
-        """Close the splash screen; called via QTimer after the minimum display time."""
-        if self._splash is not None:
-            self._splash.finish(self)
-            self._splash = None
+        n_brush = len(brush_tools)
+        self.statusBar().showMessage(f"Ready - {n_brush} brush(es) loaded", 5000)
 
     # --- tool lookup helpers -------------------------------------------------
     # Internal code MUST NOT key off display name or icon glyph; those are
@@ -498,7 +488,20 @@ class MainWindow(QMainWindow):
         if geom is not None:
             self.restoreGeometry(geom)
         if state is not None:
-            self.restoreState(state)
+            # Defer restoreState until the event loop has applied geometry
+            # (and any maximize state). Calling it inline when the window
+            # is mid-resize gives docks default sizes that only correct
+            # themselves on the next un/re-maximize.
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._apply_dock_state(state))
+
+    def _apply_dock_state(self, state) -> None:
+        self.restoreState(state)
+        # Force a layout pass so the central widget + docks recompute
+        # against the now-final window size.
+        cw = self.centralWidget()
+        if cw is not None:
+            cw.updateGeometry()
 
     def _save_layout(self) -> None:
         self._settings.setValue("window/geometry", self.saveGeometry())
@@ -2100,6 +2103,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         import threading
+        if not getattr(self, "_booted", False):
+            event.accept()
+            return
         try:
             self._plugin_watch_timer.stop()
         except Exception:
