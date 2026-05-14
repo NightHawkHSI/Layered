@@ -16,8 +16,8 @@ from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
-from .layer import LayerStack
-from .tools import Tool
+from app.core.layer import LayerStack
+from app.plugins.tools import Tool
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp", ".dds"}
@@ -49,6 +49,9 @@ class Canvas(QWidget):
         self.zoom: float = 1.0
         self._auto_fit = True
         self._pan = QPoint(0, 0)
+        # Non-destructive horizontal mirror of the *view* only — pixels are
+        # untouched; an artist trick for spotting composition/anatomy errors.
+        self._mirror_x = False
         self._cached_pixmap: Optional[QPixmap] = None
         self._dirty = True
         self._panning = False
@@ -83,6 +86,14 @@ class Canvas(QWidget):
         self._auto_fit = True
         self._compute_fit_zoom()
         self._pan = QPoint(0, 0)
+        self.update()
+
+    def mirror_x(self) -> bool:
+        return self._mirror_x
+
+    def set_mirror_x(self, on: bool) -> None:
+        """Toggle the non-destructive horizontal mirror view."""
+        self._mirror_x = bool(on)
         self.update()
 
     def width(self) -> int:  # type: ignore[override]
@@ -149,7 +160,7 @@ class Canvas(QWidget):
                 painter.fillRect(cx, cy, cb, cb, color)
         painter.restore()
 
-        painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+        self._draw_canvas_pixmap(painter, target, pixmap)
 
         painter.setPen(QPen(QColor(0, 0, 0, 200), 1))
         painter.drawRect(target)
@@ -193,6 +204,8 @@ class Canvas(QWidget):
         y0 = (super().height() - scaled_h) // 2 + self._pan.y()
         cx = int((pos.x() - x0) / max(self.zoom, 1e-6))
         cy = int((pos.y() - y0) / max(self.zoom, 1e-6))
+        if self._mirror_x:
+            cx = self.layer_stack.width - 1 - cx
         return cx, cy
 
     def _selection_edges(self, mask) -> list[tuple[int, int, int, int]]:
@@ -270,14 +283,27 @@ class Canvas(QWidget):
             pix = QPixmap.fromImage(qimg)
             self._sel_fill_cache = (mask, mask.size, pix)
         if pix is not None:
-            painter.drawPixmap(target, pix, QRectF(pix.rect()))
+            self._draw_canvas_pixmap(painter, target, pix)
 
     def canvas_to_screen(self, cx: float, cy: float) -> tuple[float, float]:
         scaled_w = int(self.layer_stack.width * self.zoom)
         scaled_h = int(self.layer_stack.height * self.zoom)
         x0 = (super().width() - scaled_w) // 2 + self._pan.x()
         y0 = (super().height() - scaled_h) // 2 + self._pan.y()
+        if self._mirror_x:
+            return x0 + (self.layer_stack.width - cx) * self.zoom, y0 + cy * self.zoom
         return x0 + cx * self.zoom, y0 + cy * self.zoom
+
+    def _draw_canvas_pixmap(self, painter: QPainter, target: QRectF, pix: QPixmap) -> None:
+        """Blit a canvas-sized pixmap into `target`, honouring mirror-x view."""
+        if self._mirror_x:
+            painter.save()
+            painter.translate(target.left() + target.right(), 0.0)
+            painter.scale(-1.0, 1.0)
+            painter.drawPixmap(target, pix, QRectF(pix.rect()))
+            painter.restore()
+        else:
+            painter.drawPixmap(target, pix, QRectF(pix.rect()))
 
     def _update_modifiers(self, e) -> None:
         tool = self.tool

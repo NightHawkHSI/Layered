@@ -1,6 +1,6 @@
 # pot_resize.py
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _next_pot(x):
     p = 1

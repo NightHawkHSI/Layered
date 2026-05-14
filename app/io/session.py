@@ -17,8 +17,8 @@ from typing import Optional
 
 from PIL import Image
 
-from .layer import Layer, LayerStack
-from .project import Project
+from app.core.layer import Layer, LayerStack
+from app.core.project import Project
 
 
 def _wipe(session_dir: Path) -> None:

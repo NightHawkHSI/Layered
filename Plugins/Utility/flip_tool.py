@@ -1,4 +1,4 @@
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 from PIL import Image
 
 class FlipToolPlugin(Plugin):

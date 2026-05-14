@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.tool_loader import _slug, load_tools
+from app.plugins.tool_loader import _slug, load_tools
 
 
 # --- _slug ---
@@ -37,7 +37,7 @@ def _write_tool(tool_dir, *, body: str):
 
 
 _TOOL_TEMPLATE = """
-from app.tools import Tool
+from app.plugins.tools import Tool
 
 class _T(Tool):
     name = {name!r}

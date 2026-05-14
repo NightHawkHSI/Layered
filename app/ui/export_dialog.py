@@ -59,7 +59,7 @@ from PyQt6.QtWidgets import (
 # ----------------------------------------------------------------------
 
 try:
-    from ..export import FORMATS
+    from app.io.export import FORMATS
 except Exception:
     FORMATS = {
         "PNG": ("png", True),

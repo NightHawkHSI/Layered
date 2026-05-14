@@ -409,7 +409,7 @@ class MoveTool(_SelectionToolBase):
         self._tx_orig_offset = None
 
     def _set_selection_mask(self, mask) -> None:
-        from app.project import Selection
+        from app.core.project import Selection
         bb = mask.getbbox()
         setter = getattr(self.ctx, "set_selection", None)
         if callable(setter):

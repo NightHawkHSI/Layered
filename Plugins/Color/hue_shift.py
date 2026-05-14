@@ -1,7 +1,7 @@
 # hue_shift.py
 import numpy as np
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _hue(img: Image.Image, *, shift: int = 90):
     img = img.convert("RGBA")

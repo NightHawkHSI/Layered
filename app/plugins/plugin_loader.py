@@ -16,12 +16,23 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Callable, Optional
 
 from PIL import Image
 
-from .logger import get_logger, get_plugin_logger, write_crash_report
-from .plugin_api import Plugin, PluginAction, PluginContext, PluginFilter, PluginHost, Setting
+from app.app_ui.logger import get_logger, get_plugin_logger, write_crash_report
+from app.core.layer import LayerStack
+
+from .plugin_api import (
+    CanvasLike,
+    Plugin,
+    PluginAction,
+    PluginContext,
+    PluginFilter,
+    PluginHost,
+    Setting,
+)
 from .tools import Tool, ToolContext
 
 log = get_logger("plugins")
@@ -45,7 +56,7 @@ class ActionEntry:
 class LoadedPlugin:
     name: str
     module_path: Path
-    plugin: Plugin
+    plugin: Optional[Plugin] = None
     tools: dict[str, Tool] = field(default_factory=dict)
     filters: dict[str, FilterEntry] = field(default_factory=dict)
     actions: dict[str, ActionEntry] = field(default_factory=dict)
@@ -119,7 +130,7 @@ def discover_plugin_files(plugins_dir: Path) -> list[tuple[Path, Optional[str]]]
     return out
 
 
-def _load_module(path: Path):
+def _load_module(path: Path) -> ModuleType:
     mod_name = f"layered_plugin_{path.stem}"
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
@@ -132,9 +143,9 @@ def _load_module(path: Path):
 
 def load_plugins(
     plugins_dir: Path,
-    layer_stack,
+    layer_stack: LayerStack,
     tool_context: ToolContext,
-    canvas,
+    canvas: CanvasLike,
     host: Optional[PluginHost] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> PluginRegistry:
@@ -149,7 +160,7 @@ def load_plugins(
                 on_progress(idx, total, path.stem)
             except Exception:
                 pass
-        loaded = LoadedPlugin(name=path.stem, module_path=path, plugin=None)  # type: ignore
+        loaded = LoadedPlugin(name=path.stem, module_path=path)
         plugin_logger = get_plugin_logger(path.stem)
         try:
             module = _load_module(path)
@@ -187,7 +198,7 @@ def load_plugins(
             loaded.plugin = instance
             loaded.name = getattr(instance, "name", path.stem)
 
-            def _register_tool(name: str, tool: Tool, _l=loaded, _pl=plugin_logger):
+            def _register_tool(name: str, tool: Tool, _l=loaded, _pl=plugin_logger) -> None:
                 if not isinstance(tool, Tool):
                     _pl.error("register_tool: %s is not a Tool", name)
                     return
@@ -197,7 +208,7 @@ def load_plugins(
 
             def _register_filter(name: str, fn: PluginFilter, settings: Optional[list[Setting]] = None,
                                  category: Optional[str] = None,
-                                 _l=loaded, _pl=plugin_logger, _fc=folder_category):
+                                 _l=loaded, _pl=plugin_logger, _fc=folder_category) -> None:
                 wrapped = _wrap_filter(_pl, fn)
                 cat = category if category is not None else _fc
                 entry = FilterEntry(fn=wrapped, settings=list(settings or []), category=cat)
@@ -209,7 +220,7 @@ def load_plugins(
 
             def _register_action(name: str, fn: PluginAction, settings: Optional[list[Setting]] = None,
                                  category: Optional[str] = None,
-                                 _l=loaded, _pl=plugin_logger, _fc=folder_category):
+                                 _l=loaded, _pl=plugin_logger, _fc=folder_category) -> None:
                 wrapped = _wrap_action(_pl, fn)
                 cat = category if category is not None else _fc
                 entry = ActionEntry(fn=wrapped, settings=list(settings or []), category=cat)

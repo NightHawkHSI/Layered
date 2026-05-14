@@ -1,8 +1,8 @@
 from PIL import Image
 import random
 
-from app.plugin_api import Plugin, PluginContext
-from app.tools import Tool
+from app.plugins.plugin_api import Plugin, PluginContext
+from app.plugins.tools import Tool
 
 
 # ---------------------------

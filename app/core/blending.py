@@ -9,6 +9,7 @@ kernel (10x-50x speedup on big arrays). Otherwise the numpy path runs.
 """
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 import numpy as np
@@ -38,7 +39,10 @@ _MODE_LIGHTEN    = 5
 _MODE_ADD        = 6
 _MODE_SUBTRACT   = 7
 _MODE_DIFFERENCE = 8
+_MODE_SOFT_LIGHT = 9
 
+# Modes listed here run on the JIT path. Non-separable HSL modes (Color,
+# Saturation) are numpy-only — composite() routes them past the kernel.
 _MODE_IDS: dict[str, int] = {
     "Normal":     _MODE_NORMAL,
     "Multiply":   _MODE_MULTIPLY,
@@ -49,6 +53,7 @@ _MODE_IDS: dict[str, int] = {
     "Add":        _MODE_ADD,
     "Subtract":   _MODE_SUBTRACT,
     "Difference": _MODE_DIFFERENCE,
+    "Soft Light": _MODE_SOFT_LIGHT,
 }
 
 
@@ -115,16 +120,90 @@ def difference(base: np.ndarray, top: np.ndarray) -> np.ndarray:
     return _combine(np.abs(br - tr), ta)
 
 
+def soft_light(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """W3C soft-light: a gentle dodge/burn driven by the top layer."""
+    br, _ = _split(base)
+    tr, ta = _split(top)
+    d = np.where(br <= 0.25, ((16.0 * br - 12.0) * br + 4.0) * br, np.sqrt(br))
+    out = np.where(
+        tr <= 0.5,
+        br - (1.0 - 2.0 * tr) * br * (1.0 - br),
+        br + (2.0 * tr - 1.0) * (d - br),
+    )
+    return _combine(out, ta)
+
+
+# --- non-separable (HSL) blend helpers, per the W3C compositing spec ---
+
+def _luma(rgb: np.ndarray) -> np.ndarray:
+    return 0.3 * rgb[..., 0:1] + 0.59 * rgb[..., 1:2] + 0.11 * rgb[..., 2:3]
+
+
+def _sat(rgb: np.ndarray) -> np.ndarray:
+    return rgb.max(axis=-1, keepdims=True) - rgb.min(axis=-1, keepdims=True)
+
+
+def _clip_color(rgb: np.ndarray) -> np.ndarray:
+    """Pull any out-of-gamut channel back toward the pixel's luma."""
+    l = _luma(rgb)
+    n = rgb.min(axis=-1, keepdims=True)
+    x = rgb.max(axis=-1, keepdims=True)
+    out = rgb
+    lo = l + (rgb - l) * l / np.where((l - n) != 0.0, l - n, 1.0)
+    out = np.where(n < 0.0, lo, out)
+    hi = l + (rgb - l) * (1.0 - l) / np.where((x - l) != 0.0, x - l, 1.0)
+    out = np.where(x > 1.0, hi, out)
+    return out
+
+
+def _set_luma(rgb: np.ndarray, target_l: np.ndarray) -> np.ndarray:
+    return _clip_color(rgb + (target_l - _luma(rgb)))
+
+
+def _set_sat(rgb: np.ndarray, target_s: np.ndarray) -> np.ndarray:
+    """Rescale a pixel's channels to the given saturation, keeping order."""
+    order = np.argsort(rgb, axis=-1)
+    srt = np.take_along_axis(rgb, order, axis=-1)
+    cmin = srt[..., 0:1]
+    cmid = srt[..., 1:2]
+    cmax = srt[..., 2:3]
+    span = cmax - cmin
+    has = span > 1e-6
+    new = np.zeros_like(srt)
+    new[..., 1:2] = np.where(has, (cmid - cmin) * target_s / np.where(has, span, 1.0), 0.0)
+    new[..., 2:3] = np.where(has, target_s, 0.0)
+    out = np.empty_like(rgb)
+    np.put_along_axis(out, order, new, axis=-1)
+    return out
+
+
+def color(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """Hue + saturation of the top layer, luma of the base."""
+    br, _ = _split(base)
+    tr, ta = _split(top)
+    return _combine(_set_luma(tr, _luma(br)), ta)
+
+
+def saturation(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """Saturation of the top layer, hue + luma of the base."""
+    br, _ = _split(base)
+    tr, ta = _split(top)
+    return _combine(_set_luma(_set_sat(br, _sat(tr)), _luma(br)), ta)
+
+
 BLEND_MODES: dict[str, BlendFn] = {
     "Normal": normal,
     "Multiply": multiply,
     "Screen": screen,
     "Overlay": overlay,
+    "Soft Light": soft_light,
     "Darken": darken,
     "Lighten": lighten,
     "Add": add,
     "Subtract": subtract,
     "Difference": difference,
+    "Color": color,
+    "Saturation": saturation,
 }
 
 
@@ -169,6 +248,13 @@ def _composite_kernel(base: np.ndarray, top: np.ndarray,
                 cr, cg, cb = br - tr, bg - tg, bb - tb
             elif mode_id == 8:      # Difference
                 cr = abs(br - tr); cg = abs(bg - tg); cb = abs(bb - tb)
+            elif mode_id == 9:      # Soft Light
+                dr = ((16.0 * br - 12.0) * br + 4.0) * br if br <= 0.25 else math.sqrt(br)
+                dg = ((16.0 * bg - 12.0) * bg + 4.0) * bg if bg <= 0.25 else math.sqrt(bg)
+                db = ((16.0 * bb - 12.0) * bb + 4.0) * bb if bb <= 0.25 else math.sqrt(bb)
+                cr = br - (1.0 - 2.0 * tr) * br * (1.0 - br) if tr <= 0.5 else br + (2.0 * tr - 1.0) * (dr - br)
+                cg = bg - (1.0 - 2.0 * tg) * bg * (1.0 - bg) if tg <= 0.5 else bg + (2.0 * tg - 1.0) * (dg - bg)
+                cb = bb - (1.0 - 2.0 * tb) * bb * (1.0 - bb) if tb <= 0.5 else bb + (2.0 * tb - 1.0) * (db - bb)
             else:
                 cr, cg, cb = tr, tg, tb
 
@@ -210,10 +296,9 @@ def composite(base: np.ndarray, top: np.ndarray, mode: str, opacity: float) -> n
     Both arrays are HxWx4 float32 in [0, 1]. JIT path used when numba is
     available, else numpy path.
     """
-    if _HAS_NUMBA:
+    if _HAS_NUMBA and mode in _MODE_IDS:
         b = np.ascontiguousarray(base, dtype=np.float32)
         t = np.ascontiguousarray(top,  dtype=np.float32)
         if b.shape == t.shape and b.ndim == 3 and b.shape[2] == 4:
-            mode_id = _MODE_IDS.get(mode, _MODE_NORMAL)
-            return _composite_kernel(b, t, mode_id, float(opacity))
+            return _composite_kernel(b, t, _MODE_IDS[mode], float(opacity))
     return _composite_numpy(base, top, mode, float(opacity))

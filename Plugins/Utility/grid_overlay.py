@@ -1,4 +1,4 @@
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 class GridOverlayPlugin(Plugin):
     name = "Grid Overlay"

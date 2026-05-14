@@ -85,7 +85,7 @@ Paint assets from scratch or retouch imports with a full suite of drawing primit
 <br/>
 
 - Per-layer **opacity** and **visibility** toggle
-- **9 blend modes** — Normal, Multiply, Screen, Overlay, Darken, Lighten, Add, Subtract, Difference
+- **12 blend modes** — Normal, Multiply, Screen, Overlay, Soft Light, Darken, Lighten, Add, Subtract, Difference, Color, Saturation
 - Reorder, rename, duplicate, and group layers
 - Original pixel data is **never** destroyed — every operation is fully reversible
 
@@ -188,21 +188,33 @@ Layered/
 │
 ├── 📁 app/
 │   ├── main_window.py            # Menus, docks, plugin wiring
-│   ├── canvas.py                 # Interactive canvas widget
-│   ├── layer.py                  # Layer + LayerStack
-│   ├── blending.py               # Blend-mode math (NumPy)
-│   ├── tools.py                  # Tool base class + ToolContext + drawing helpers
-│   ├── tool_loader.py            # Tool discovery from Plugins/Brushes/<Group>/<Tool>/
-│   ├── brush_loader.py           # Brush-preset discovery from Brushes/
-│   ├── image_ops.py              # Pixel ops (fill, transforms, etc.)
-│   ├── history.py                # Undo / redo stack
-│   ├── project.py                # .layered project save/load
-│   ├── session.py                # Multi-document session state
-│   ├── export.py                 # Composite + per-layer export
-│   ├── plugin_api.py             # Public plugin API
-│   ├── plugin_loader.py          # Plugin discovery + sandbox
-│   ├── logger.py                 # Logging + crash reporter
-│   └── 📁 ui/                   # Qt panels (layers, tools, color, history,
+│   ├── 📁 core/                  # Domain model
+│   │   ├── layer.py              #   Layer + LayerStack
+│   │   ├── project.py            #   .layered project document
+│   │   ├── history.py            #   Undo / redo stack
+│   │   ├── blending.py           #   Blend-mode math (NumPy / numba)
+│   │   ├── image_ops.py          #   Pixel ops (fill, transforms, etc.)
+│   │   └── adjustments.py        #   Adjustment-layer math
+│   ├── 📁 render/                # Compositing surfaces
+│   │   ├── canvas.py             #   Interactive canvas widget
+│   │   ├── gpu_renderer.py       #   moderngl GPU compositor (opt-in)
+│   │   └── tile_renderer.py      #   Tiled CPU compositor
+│   ├── 📁 io/                    # Persistence
+│   │   ├── export.py             #   Composite + per-layer export
+│   │   ├── project_io.py         #   .layered file save / load
+│   │   ├── session.py            #   Multi-document session state
+│   │   └── brush_loader.py       #   Brush-preset discovery from Brushes/
+│   ├── 📁 plugins/               # Plugin system
+│   │   ├── plugin_api.py         #   Public plugin API
+│   │   ├── plugin_loader.py      #   Plugin discovery + sandbox
+│   │   ├── tool_loader.py        #   Tool discovery from Plugins/Brushes/
+│   │   └── tools.py              #   Tool base class + ToolContext + helpers
+│   ├── 📁 app_ui/                # App-shell support
+│   │   ├── theme.py              #   Dark / light theme engine
+│   │   ├── preferences.py        #   User preferences (prefs.json)
+│   │   └── logger.py             #   Logging + crash reporter
+│   ├── 📁 controllers/           # History / paste / selection controllers
+│   └── 📁 ui/                    # Qt panels (layers, tools, color, history,
 │                                 #   text, console, project tabs, dialogs)
 │
 ├── 📁 Plugins/                   # ← Drop your plugins here
@@ -229,7 +241,7 @@ Drop a `.py` file in `Plugins/` and subclass `Plugin` — that's it.
 ```python
 # Plugins/my_filter.py
 from PIL import Image, ImageOps
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 
 class GrayscalePlugin(Plugin):
@@ -333,13 +345,16 @@ and shape/selection bases: [`docs/build_brush.md`](docs/build_brush.md).
 | **Multiply** | Darkens — multiplies values | Shadows, tinting |
 | **Screen** | Lightens — inverts multiply | Glows, highlights |
 | **Overlay** | Contrast boost (multiply + screen) | Detail enhancement |
+| **Soft Light** | Gentle dodge / burn driven by the top layer | Subtle shading |
 | **Darken** | Keeps the darker pixel | Soft shadows |
 | **Lighten** | Keeps the lighter pixel | Soft highlights |
 | **Add** | Brightens additively (linear dodge) | Bloom, fire, neon |
 | **Subtract** | Darkens subtractively | Dark burn effects |
 | **Difference** | Highlights where layers differ | Masking, debug |
+| **Color** | Hue + saturation of top, luma of base | Recoloring, tinting |
+| **Saturation** | Saturation of top, hue + luma of base | Vibrance tweaks |
 
-> All modes operate on **premultiplied RGBA** via NumPy in `app/blending.py`.
+> All modes operate on **premultiplied RGBA** via NumPy in `app/core/blending.py` (numba-accelerated when available).
 
 ---
 

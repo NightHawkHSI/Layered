@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image, ImageChops
 
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 
 class InvertPlugin(Plugin):

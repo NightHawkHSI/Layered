@@ -1,4 +1,4 @@
-"""Preferences dialog — UI colour (accent) + startup behaviour."""
+"""Preferences dialog — theme, UI accent colour + startup behaviour."""
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
@@ -6,6 +6,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..preferences import Preferences
+from app.app_ui.preferences import Preferences
 
 
 class _ColorSwatch(QPushButton):
@@ -46,12 +47,13 @@ class _ColorSwatch(QPushButton):
 class PrefsDialog(QDialog):
     """Edit and preview user preferences."""
 
-    def __init__(self, prefs: Preferences, apply_fn, parent=None) -> None:
+    def __init__(self, prefs: Preferences, apply_fn, apply_theme_fn, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(360)
-        self._prefs    = prefs
-        self._apply_fn = apply_fn          # callable(hex) — live preview
+        self._prefs          = prefs
+        self._apply_fn       = apply_fn        # callable(hex) — live preview
+        self._apply_theme_fn = apply_theme_fn  # callable(name) — live preview
 
         root = QVBoxLayout(self)
         root.setSpacing(14)
@@ -59,6 +61,15 @@ class PrefsDialog(QDialog):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setSpacing(10)
+
+        # -- theme ----------------------------------------------------------
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(["Dark", "Light"])
+        self._theme_combo.setCurrentText(
+            "Light" if prefs.theme == "light" else "Dark"
+        )
+        self._theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        form.addRow("Theme:", self._theme_combo)
 
         # -- accent colour --------------------------------------------------
         accent_row = QHBoxLayout()
@@ -101,11 +112,15 @@ class PrefsDialog(QDialog):
         )
         root.addWidget(btns)
 
-        # Keep the colour that was active when the dialog opened so we can
-        # restore it if the user presses Cancel.
+        # Keep the values active when the dialog opened so we can restore
+        # them if the user presses Cancel after a live preview.
         self._original_accent = prefs.accent_color
+        self._original_theme  = prefs.theme
 
     # -- internal helpers ---------------------------------------------------
+
+    def _on_theme_changed(self, label: str) -> None:
+        self._apply_theme_fn(label.lower())   # live preview
 
     def _update_preview(self, hex_color: str) -> None:
         c = QColor(hex_color)
@@ -134,7 +149,9 @@ class PrefsDialog(QDialog):
     def _apply(self) -> None:
         self._prefs.accent_color    = self._swatch.color()
         self._prefs.restore_session = self._restore_cb.isChecked()
-        self._apply_fn(self._prefs.accent_color)
+        self._prefs.theme           = self._theme_combo.currentText().lower()
+        # _apply_theme_fn reinstalls the base stylesheet *and* the accent.
+        self._apply_theme_fn(self._prefs.theme)
         self._prefs.save()
 
     def _commit(self) -> None:
@@ -142,5 +159,8 @@ class PrefsDialog(QDialog):
         self.accept()
 
     def _revert(self) -> None:
-        self._apply_fn(self._original_accent)   # undo live preview
+        # Undo live previews: theme first (it also re-lays the accent),
+        # then the accent in case only the colour was being previewed.
+        self._apply_theme_fn(self._original_theme)
+        self._apply_fn(self._original_accent)
         self.reject()

@@ -1,7 +1,7 @@
 # outer_glow.py
 from PIL import Image, ImageFilter
 import numpy as np
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _glow(img, *, radius=10, color=(255,255,0,255)):
     img = img.convert("RGBA")

@@ -1,4 +1,6 @@
 {
   "accent_color": "#00ff00",
-  "restore_session": false
+  "restore_session": false,
+  "theme": "dark",
+  "shortcuts": {}
 }

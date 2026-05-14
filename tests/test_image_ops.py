@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from app.image_ops import centered_offset, fit_to_canvas, place_on_canvas
+from app.core.image_ops import centered_offset, fit_to_canvas, place_on_canvas
 
 
 # --- fit_to_canvas ---

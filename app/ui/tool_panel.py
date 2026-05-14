@@ -51,7 +51,8 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
 )
 
-from ..tools import Tool, ToolContext
+from app.plugins.tools import Tool, ToolContext
+
 from .slider_field import SliderField
 
 

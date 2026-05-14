@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image, ImageFilter
 
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 
 def _build_backdrop(

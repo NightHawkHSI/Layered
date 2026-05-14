@@ -31,13 +31,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .canvas import Canvas
-from .export import export_composite, export_layers
-from .history import History
-from .image_ops import place_on_canvas
-from .layer import Layer, LayerStack
-from .logger import get_logger
-from .plugin_loader import (
+from app.render.canvas import Canvas
+from app.io.export import export_composite, export_layers
+from app.core.history import History
+from app.core.image_ops import place_on_canvas
+from app.core.layer import Layer, LayerStack
+from app.app_ui.logger import get_logger
+from app.plugins.plugin_loader import (
     ActionEntry,
     FilterEntry,
     PluginRegistry,
@@ -46,24 +46,24 @@ from .plugin_loader import (
     shutdown_plugins,
     snapshot_plugin_files,
 )
-from .project import Project
-from .project_io import PROJECT_EXT, PROJECT_FILTER, load_project, save_project
-from .preferences import Preferences
-from .session import load_session, save_session
-from .brush_loader import load_brush_presets
-from .tool_loader import load_tools as load_brush_tools
-from .tools import ToolContext
-from .ui.color_panel import ColorPanel
-from .ui.console import LogConsole
-from .ui.drop_dialog import DropActionDialog
-from .ui.export_dialog import ExportDialog
-from .controllers import HistoryController, PasteController, SelectionController
-from .ui.history_panel import HistoryPanel
-from .ui.layer_panel import LayerPanel
-from .ui.plugin_settings_dialog import PluginSettingsDialog
-from .ui.project_tabs import ProjectTabs
-from .ui.text_panel import TextPanel
-from .ui.tool_panel import ToolPanel
+from app.core.project import Project
+from app.io.project_io import PROJECT_EXT, PROJECT_FILTER, load_project, save_project
+from app.app_ui.preferences import Preferences
+from app.io.session import load_session, save_session
+from app.io.brush_loader import load_brush_presets
+from app.plugins.tool_loader import load_tools as load_brush_tools
+from app.plugins.tools import ToolContext
+from app.ui.color_panel import ColorPanel
+from app.ui.console import LogConsole
+from app.ui.drop_dialog import DropActionDialog
+from app.ui.export_dialog import ExportDialog
+from app.controllers import HistoryController, PasteController, SelectionController
+from app.ui.history_panel import HistoryPanel
+from app.ui.layer_panel import LayerPanel
+from app.ui.plugin_settings_dialog import PluginSettingsDialog
+from app.ui.project_tabs import ProjectTabs
+from app.ui.text_panel import TextPanel
+from app.ui.tool_panel import ToolPanel
 
 
 if getattr(sys, "frozen", False):
@@ -133,14 +133,12 @@ class MainWindow(QMainWindow):
         # construction has populated all the attributes they touch.
         self._booted = False
 
-        # Defer heavy construction so the empty window can paint immediately.
-        # main.py calls self.show() right after __init__; Qt's event loop
-        # then dispatches the QTimer.singleShot(0, ...) on the first idle
-        # tick AFTER the first paint, giving paint.net-style fast launch.
+        # Build the whole window synchronously here. main.py keeps a splash
+        # screen up for the duration, so the user never sees the half-built
+        # shell; the window is only shown once it is fully populated.
         self._boot_width = width
         self._boot_height = height
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._boot_full)
+        self._boot_full()
 
     def _boot_full(self) -> None:
         from PyQt6.QtCore import QTimer
@@ -149,7 +147,7 @@ class MainWindow(QMainWindow):
         del self._boot_width, self._boot_height
 
         self.prefs = Preferences(PREFS_PATH)
-        self._apply_accent(self.prefs.accent_color)
+        self._apply_theme(self.prefs.theme)
 
         self.projects: list[Project] = [Project.blank(width, height)]
         self._pending_session_restore = bool(self.prefs.restore_session)
@@ -332,13 +330,15 @@ class MainWindow(QMainWindow):
         self._install_hud_picker()
         self.log.info("Main window initialized: %dx%d", width, height)
         self._booted = True
-        # Defer plugin discovery + import so the window is visible before
-        # importlib overhead runs (biggest contributor to slow cold start).
-        QTimer.singleShot(0, self._deferred_plugin_init)
+        # Load plugins + brushes synchronously, before the window is shown.
+        # Doing it after show() let the plugin dock widgets flash on screen
+        # as briefly-floating top-level windows; main.py keeps the splash up
+        # for this whole phase instead.
+        self._deferred_plugin_init()
 
     def _install_hud_picker(self) -> None:
         from PyQt6.QtGui import QShortcut
-        from .ui.hud_picker import HudPicker
+        from app.ui.hud_picker import HudPicker
         self._hud = HudPicker(self)
         sc = QShortcut(QKeySequence("Shift+S"), self)
         sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -488,12 +488,9 @@ class MainWindow(QMainWindow):
         if geom is not None:
             self.restoreGeometry(geom)
         if state is not None:
-            # Defer restoreState until the event loop has applied geometry
-            # (and any maximize state). Calling it inline when the window
-            # is mid-resize gives docks default sizes that only correct
-            # themselves on the next un/re-maximize.
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._apply_dock_state(state))
+            # _boot_full runs before the window is shown, so the dock state
+            # can be applied inline here — there is no live resize to race.
+            self._apply_dock_state(state)
 
     def _apply_dock_state(self, state) -> None:
         self.restoreState(state)
@@ -636,6 +633,10 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
+        # Registry of rebindable actions, repopulated by _act() on every
+        # rebuild (plugin reload, project switch, shortcut edit).
+        self._actions: dict[str, QAction] = {}
+        self._action_defaults: dict[str, str] = {}
 
         file_menu = mb.addMenu("&File")
         file_menu.addAction(self._act("New…", self._on_new, "Ctrl+N"))
@@ -681,6 +682,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._act("Delete Active Layer", self._on_delete_layer, "Ctrl+Delete"))
         edit_menu.addSeparator()
         edit_menu.addAction(self._act("Preferences\u2026", self._on_preferences, "Ctrl+,"))
+        edit_menu.addAction(self._act("Keyboard Shortcuts\u2026", self._on_shortcuts))
 
         image_menu = mb.addMenu("&Image")
         image_menu.addAction(self._act("Resize Canvas…", self._on_resize_canvas))
@@ -711,6 +713,14 @@ class MainWindow(QMainWindow):
         zoom_in_alt.setShortcut(QKeySequence("Ctrl++"))
         zoom_in_alt.triggered.connect(lambda: self._zoom_relative(1.25))
         self.addAction(zoom_in_alt)
+        view_menu.addSeparator()
+        # Non-destructive horizontal flip of the view (artist composition aid).
+        self._mirror_act = QAction("Mirror View Horizontally", self)
+        self._mirror_act.setCheckable(True)
+        self._mirror_act.setChecked(self.canvas.mirror_x())
+        self._mirror_act.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self._mirror_act.triggered.connect(self.canvas.set_mirror_x)
+        view_menu.addAction(self._mirror_act)
         view_menu.addSeparator()
         panels_menu = view_menu.addMenu("Panels")
         # Use a custom toggle (not dock.toggleViewAction()) so we can force a
@@ -815,16 +825,48 @@ class MainWindow(QMainWindow):
             f"color:{'#fff' if luma < 0.55 else '#000'}; border-radius:3px; }}\n"
         )
 
+    def _apply_theme(self, name: str) -> None:
+        """Switch the whole app between the bundled dark and light themes."""
+        from PyQt6.QtWidgets import QApplication
+        from app.app_ui.theme import apply_theme
+        app = QApplication.instance()
+        if app is None:
+            return
+        apply_theme(app, name)
+        # Theme installs a fresh base stylesheet; re-layer the accent on top.
+        self._apply_accent(self.prefs.accent_color)
+
+    def _rebuild_menus(self) -> None:
+        """Tear down and rebuild the menu bar — picks up shortcut overrides."""
+        self.menuBar().clear()
+        self._build_menus()
+
     def _on_preferences(self) -> None:
-        from .ui.prefs_dialog import PrefsDialog
-        dlg = PrefsDialog(self.prefs, self._apply_accent, parent=self)
+        from app.ui.prefs_dialog import PrefsDialog
+        dlg = PrefsDialog(
+            self.prefs, self._apply_accent, self._apply_theme, parent=self
+        )
         dlg.exec()
 
-    def _act(self, name: str, slot, shortcut: Optional[str] = None) -> QAction:
+    def _on_shortcuts(self) -> None:
+        from app.ui.shortcuts_dialog import ShortcutsDialog
+        dlg = ShortcutsDialog(
+            self.prefs, self._actions, self._action_defaults,
+            self._rebuild_menus, parent=self,
+        )
+        dlg.exec()
+
+    def _act(self, name: str, slot, shortcut: Optional[str] = None,
+             track: bool = True) -> QAction:
         a = QAction(name, self)
-        if shortcut:
-            a.setShortcut(QKeySequence(shortcut))
+        # User rebindings (prefs.shortcuts) override the built-in default.
+        seq = self.prefs.shortcuts.get(name, shortcut) if track else shortcut
+        if seq:
+            a.setShortcut(QKeySequence(seq))
         a.triggered.connect(slot)
+        if track:
+            self._actions[name] = a
+            self._action_defaults[name] = shortcut or ""
         return a
 
     def _populate_brush_menu(self, menu, presets_by_category: dict) -> None:
@@ -844,6 +886,7 @@ class MainWindow(QMainWindow):
                 sub.addAction(self._act(
                     label,
                     lambda _=False, p=preset: self.tool_panel._apply_preset(p),
+                    track=False,
                 ))
 
     def _populate_plugin_menu(self, menu, entries, make_slot) -> None:
@@ -865,7 +908,7 @@ class MainWindow(QMainWindow):
                     sub = menu.addMenu(cat)
                     submenus[cat] = sub
                 target = sub
-            target.addAction(self._act(label, make_slot(name, entry)))
+            target.addAction(self._act(label, make_slot(name, entry), track=False))
 
     def _set_zoom(self, z: float) -> None:
         self.canvas.zoom = z
@@ -1366,7 +1409,7 @@ class MainWindow(QMainWindow):
             actions = [do_new_project, do_add_layer, do_replace]
 
         from PyQt6.QtGui import QCursor
-        from .ui.radial_menu import RadialMenu
+        from app.ui.radial_menu import RadialMenu
         menu = RadialMenu(labels, self)
         menu.chosen.connect(lambda i: actions[i]())
         menu.show_at(QCursor.pos())
@@ -1601,7 +1644,7 @@ class MainWindow(QMainWindow):
         bottom = stack.layers[stack.active_index - 1]
         cw, ch = stack.width, stack.height
         # Composite top-onto-bottom in canvas space, then write into bottom.
-        from .blending import composite as np_composite
+        from app.core.blending import composite as np_composite
         import numpy as np
         bottom_canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
         bottom_canvas.paste(bottom.image, bottom.offset)
@@ -1938,7 +1981,7 @@ class MainWindow(QMainWindow):
         self.emit_event("active_changed", index)
 
     def add_layer(self, image=None, name=None):
-        from .layer import Layer as _Layer
+        from app.core.layer import Layer as _Layer
         stack = self.current().stack
         if image is None:
             layer = stack.add_layer(name=name)
@@ -1990,7 +2033,7 @@ class MainWindow(QMainWindow):
         return sel.mask if sel is not None else None
 
     def set_selection_mask(self, mask) -> None:
-        from .project import Selection
+        from app.core.project import Selection
         if mask is None:
             self.current().selection = None
         else:
@@ -2106,6 +2149,37 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_booted", False):
             event.accept()
             return
+        if not self.prefs.restore_session and any(p.dirty for p in self.projects):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Unsaved changes")
+            box.setText("Reload Project is off and you have unsaved changes.\nClose without saving?")
+            save_btn = box.addButton("Save && Exit", QMessageBox.ButtonRole.AcceptRole)
+            discard_btn = box.addButton("Close && Don't Save", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(save_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is cancel_btn or clicked is None:
+                event.ignore()
+                return
+            if clicked is save_btn:
+                original_active = self.active_project
+                for i, proj in enumerate(self.projects):
+                    if not proj.dirty:
+                        continue
+                    self.active_project = i
+                    self._bind_current()
+                    self._on_save_project_file()
+                    if proj.dirty:
+                        # User cancelled the Save As dialog or save failed; abort close.
+                        self.active_project = original_active
+                        self._bind_current()
+                        self._refresh_tabs()
+                        event.ignore()
+                        return
+                self.active_project = min(original_active, len(self.projects) - 1)
+                self._bind_current()
         try:
             self._plugin_watch_timer.stop()
         except Exception:

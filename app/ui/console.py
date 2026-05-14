@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..logger import attach_console_handler
+from app.app_ui.logger import attach_console_handler
 
 
 class LogConsole(QWidget):

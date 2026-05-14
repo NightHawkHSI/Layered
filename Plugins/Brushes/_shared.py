@@ -28,8 +28,8 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple, TypedDict, Union
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 # --- app.* ---------------------------------------------------------------
-from app.layer import Layer
-from app.tools import (
+from app.core.layer import Layer
+from app.plugins.tools import (
     Color,
     Tool,
     ToolContext,
@@ -645,7 +645,7 @@ class _SelectionToolBase(Tool):
     def _commit_mask(self, mask: Image.Image) -> None:
         if not callable(getattr(self.ctx, "set_selection", None)):
             return
-        from app.project import Selection
+        from app.core.project import Selection
         self.ctx.set_selection(Selection.from_mask(mask))
 
     def _clear_selection(self) -> None:
@@ -734,7 +734,7 @@ class _SelectionToolBase(Tool):
         shifted = Image.new("L", s["mask"].size, 0)
         shifted.paste(s["mask"], (dx, dy))
 
-        from app.project import Selection
+        from app.core.project import Selection
         bb = shifted.getbbox()
         if callable(getattr(self.ctx, "set_selection", None)):
             self.ctx.set_selection(
@@ -788,7 +788,7 @@ class _SelectionToolBase(Tool):
         s["layer"].image = restored
 
         # Restore selection mask
-        from app.project import Selection
+        from app.core.project import Selection
         mask = s["mask"]
         bb   = mask.getbbox()
         if callable(getattr(self.ctx, "set_selection", None)):

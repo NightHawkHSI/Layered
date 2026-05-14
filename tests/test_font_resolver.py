@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from app import tools as tools_mod
-from app.tools import resolve_font_path
+from app.plugins import tools as tools_mod
+from app.plugins.tools import resolve_font_path
 
 
 @pytest.fixture

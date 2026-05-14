@@ -47,7 +47,7 @@ Both filters and actions accept:
 ```python
 # Plugins/grayscale.py
 from PIL import Image, ImageOps
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 
 class GrayscalePlugin(Plugin):
@@ -202,11 +202,11 @@ Plugins/Brushes/
 
 ### Tool interface
 
-Subclass `app.tools.Tool` and implement whichever lifecycle and mouse hooks you need. Every method has a no-op default, so you only override what you actually use.
+Subclass `app.plugins.tools.Tool` and implement whichever lifecycle and mouse hooks you need. Every method has a no-op default, so you only override what you actually use.
 
 ```python
 # Plugins/Brushes/Paint/Dot/tool.py
-from app.tools import Tool
+from app.plugins.tools import Tool
 
 
 class DotTool(Tool):
@@ -237,7 +237,7 @@ class DotTool(Tool):
 TOOL_CLASS = DotTool
 ```
 
-> No `Plugin` subclass, no `register()` call — `app.tool_loader` discovers `tool.py` automatically and instantiates `TOOL_CLASS` for you.
+> No `Plugin` subclass, no `register()` call — `app.plugins.tool_loader` discovers `tool.py` automatically and instantiates `TOOL_CLASS` for you.
 
 ### Optional `tool.json`
 
@@ -251,7 +251,7 @@ TOOL_CLASS = DotTool
 | `id` | Stable internal ID. Defaults to the class `tool_id` attribute, then a slug of the folder name. |
 | `category` | Override the parent folder as the group label |
 | `icon` | Optional glyph shown on the tool button |
-| `class` | Resolve a class from `app.tools` instead of `tool.py` (legacy) |
+| `class` | Resolve a class from `app.plugins.tools` instead of `tool.py` (legacy) |
 
 ### `tool_id` — stable identifier
 
@@ -278,7 +278,7 @@ A filter is a callable `Image (RGBA) → Image`. Mutating the input is allowed b
 ```python
 # Plugins/sepia.py
 from PIL import Image
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 import numpy as np
 
 
@@ -321,7 +321,7 @@ An action is a zero-argument callable (or accepts `**kwargs` when using `setting
 ```python
 # Plugins/utilities/flip_tool.py
 from PIL import Image
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 
 class FlipPlugin(Plugin):
@@ -352,7 +352,7 @@ class FlipPlugin(Plugin):
 Declare a `Setting` list on any filter or action to get an auto-generated dialog. Values are forwarded as keyword arguments matching `Setting.name`.
 
 ```python
-from app.plugin_api import Setting
+from app.plugins.plugin_api import Setting
 
 Setting(
     name    = "strength",   # kwarg name forwarded to the callback

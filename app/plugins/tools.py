@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
-from .layer import Layer
+from app.core.layer import Layer
 
 
 # ---------------------------------------------------------------------------
@@ -514,10 +514,7 @@ def build_brush_settings_ui(tool, parent, fields=("size", "hardness", "opacity",
     from PyQt6.QtWidgets import (
         QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QSpinBox, QWidget,
     )
-    try:
-        from .ui.slider_field import SliderField
-    except Exception:
-        from app.ui.slider_field import SliderField
+    from app.ui.slider_field import SliderField
 
     w = QWidget(parent)
     w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

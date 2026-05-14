@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Tuple
 
 from PIL import Image, ImageChops
 
-from ..project import Selection
+from app.core.project import Selection
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow

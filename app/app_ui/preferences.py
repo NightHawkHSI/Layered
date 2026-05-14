@@ -11,6 +11,8 @@ from pathlib import Path
 _DEFAULTS: dict = {
     "accent_color":     "#2196f3",   # Material Blue 500
     "restore_session":  True,        # reopen projects from last run
+    "theme":            "dark",      # "dark" | "light"
+    "shortcuts":        {},          # {action name: key sequence} overrides
 }
 
 
@@ -57,3 +59,25 @@ class Preferences:
     @restore_session.setter
     def restore_session(self, value: bool) -> None:
         self._data["restore_session"] = bool(value)
+
+    @property
+    def theme(self) -> str:
+        val = str(self._data.get("theme", _DEFAULTS["theme"]))
+        return val if val in ("dark", "light") else "dark"
+
+    @theme.setter
+    def theme(self, value: str) -> None:
+        self._data["theme"] = "light" if str(value) == "light" else "dark"
+
+    @property
+    def shortcuts(self) -> dict:
+        """User key-sequence overrides, keyed by action display name."""
+        sc = self._data.get("shortcuts")
+        if not isinstance(sc, dict):
+            sc = {}
+            self._data["shortcuts"] = sc
+        return sc
+
+    @shortcuts.setter
+    def shortcuts(self, value: dict) -> None:
+        self._data["shortcuts"] = dict(value) if isinstance(value, dict) else {}

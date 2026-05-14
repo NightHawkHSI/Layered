@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-05-14 — App Package Reorg, New Blend Modes, Theme Engine, Custom Shortcuts, Mirror View
+
+### Added
+1. **`app/core/blending.py` — Soft Light, Color, and Saturation blend
+   modes.** Soft Light is the W3C separable dodge/burn formula and runs on
+   both the numpy and numba JIT paths (new `_MODE_SOFT_LIGHT = 9` kernel
+   branch). Color and Saturation are the W3C non-separable HSL modes
+   (`_set_luma` / `_set_sat` / `_clip_color` helpers); they are numpy-only,
+   so `composite()` now routes any mode not in `_MODE_IDS` past the kernel
+   instead of silently falling back to Normal. `BLEND_MODES` now has 12
+   entries and the layer-panel dropdown picks them up automatically.
+
+2. **`app/render/canvas.py` — non-destructive Mirror View.** New
+   `_mirror_x` flag with `set_mirror_x()` / `mirror_x()`; `_to_canvas_coords`
+   and `canvas_to_screen` are mirror-aware so tools, selection ants, and
+   overlays stay correct, and a shared `_draw_canvas_pixmap` helper flips
+   the composite + selection-highlight blits. Exposed in **View → Mirror
+   View Horizontally** (`Ctrl+Shift+M`). Pixels are never touched — an
+   artist trick for spotting composition errors.
+
+3. **Custom keyboard shortcuts.** `app/app_ui/preferences.py` gained a
+   `shortcuts` override map; `MainWindow._act()` reads it (built-in default
+   otherwise) and registers every menu action in `self._actions`. New
+   `app/ui/shortcuts_dialog.py` lists all rebindable actions with
+   `QKeySequenceEdit` fields — only overrides differing from the default
+   are persisted. Reachable via **Edit → Keyboard Shortcuts…**.
+
+4. **`app/app_ui/theme.py` — dark / light theme engine.** Builds a full
+   `QPalette` + base QSS for either theme; `MainWindow._apply_theme()`
+   installs it and re-layers the accent colour on top. New `theme` pref,
+   selectable in the Preferences dialog with live preview.
+
+### Changed
+5. **`app/` reorganised into subpackages.** Flat module layout replaced
+   with `core/` (layer, project, history, blending, image_ops,
+   adjustments), `render/` (canvas, gpu_renderer, tile_renderer), `io/`
+   (export, project_io, session, brush_loader), `plugins/` (plugin_api,
+   plugin_loader, tool_loader, tools), and `app_ui/` (theme, preferences,
+   logger); `main_window.py` stays at the package root, `ui/` and
+   `controllers/` are unchanged. All intra-`app` imports, the ~40 bundled
+   plugins, the tests, and `main.py` were updated. **Plugin authors:**
+   `from app.plugin_api import …` is now `from app.plugins.plugin_api
+   import …`; `app.tools` → `app.plugins.tools`. The PyInstaller build
+   needs no change — `--collect-submodules app` is recursive.
+
+6. **`app/plugins/plugin_loader.py` — fuller type hints.** `load_plugins`
+   now annotates `layer_stack` / `canvas`, `_load_module` returns
+   `ModuleType`, `LoadedPlugin.plugin` is `Optional[Plugin]`, and the inner
+   `_register_*` closures declare `-> None`.
+
 ## 2026-05-13 — Tool Panel Flow Layout & Shrink-to-Fit
 
 ### Changed

@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app import blending
-from app.blending import (
+from app.core import blending
+from app.core.blending import (
     BLEND_MODES,
     add,
     composite,
@@ -141,8 +141,9 @@ def test_difference_is_abs_diff():
 
 def test_blend_modes_registry_has_expected_keys():
     expected = {
-        "Normal", "Multiply", "Screen", "Overlay",
+        "Normal", "Multiply", "Screen", "Overlay", "Soft Light",
         "Darken", "Lighten", "Add", "Subtract", "Difference",
+        "Color", "Saturation",
     }
     assert set(BLEND_MODES.keys()) == expected
 

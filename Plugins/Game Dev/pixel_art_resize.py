@@ -1,7 +1,7 @@
 """Pixel-art resize — nearest-neighbor scale that preserves crisp pixel edges."""
 from PIL import Image
 
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 
 class PixelArtResizePlugin(Plugin):

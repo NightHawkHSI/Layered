@@ -1,5 +1,5 @@
 from PIL import Image
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 class SimpleBackgroundRemovePlugin(Plugin):
     name = "Simple Background Remove"

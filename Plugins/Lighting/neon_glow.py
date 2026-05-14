@@ -1,5 +1,5 @@
 from PIL import Image, ImageFilter, ImageChops, ImageOps
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 class NeonGlowPlugin(Plugin):
     name = "Neon Edge Bloom"

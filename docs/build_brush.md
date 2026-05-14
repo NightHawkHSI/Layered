@@ -28,7 +28,7 @@ Plugins/Brushes/
 | `name`     | yes      | Display label — shown on the button + Tools menu.           |
 | `id`       | no       | Stable internal id. Falls back to folder name slug.         |
 | `category` | no       | Override parent folder name as group label.                 |
-| `class`    | no       | Class name in `app.tools` if no `tool.py` (built-ins only). |
+| `class`    | no       | Class name in `app.plugins.tools` if no `tool.py` (built-ins only). |
 | `icon`     | no       | Glyph on the button. Overrides `Tool.icon` class attr.      |
 
 Manifest values overwrite class attrs. Either form is enough — pick one.

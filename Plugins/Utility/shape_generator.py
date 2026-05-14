@@ -8,7 +8,7 @@ import math
 import random
 from PIL import Image, ImageDraw
 
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 
 class ShapeGeneratorPlugin(Plugin):

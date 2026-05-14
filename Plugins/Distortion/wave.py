@@ -2,7 +2,7 @@
 import math
 import numpy as np
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _wave(img, *, amplitude=5, frequency=20):
     img = img.convert("RGBA")

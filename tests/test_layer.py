@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.layer import Layer, LayerStack, _scale_alpha
+from app.core.layer import Layer, LayerStack, _scale_alpha
 
 
 # --- Layer ---

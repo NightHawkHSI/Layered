@@ -110,7 +110,7 @@ def _rasterize_source(path, width: int, height: int) -> Image.Image:
     suffix = path.suffix.lower()
     if suffix == ".layered":
         try:
-            from .project_io import load_project
+            from app.io.project_io import load_project
             sub = load_project(path)
             comp = sub.stack.composite()
             if comp.size != (width, height):

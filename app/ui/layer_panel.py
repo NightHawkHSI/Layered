@@ -22,8 +22,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..blending import BLEND_MODES
-from ..layer import LayerStack
+from app.core.blending import BLEND_MODES
+from app.core.layer import LayerStack
+
 from .slider_field import SliderField
 
 

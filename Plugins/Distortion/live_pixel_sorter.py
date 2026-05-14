@@ -1,7 +1,7 @@
 ﻿import numpy as np
 import time
 from PIL import Image
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 class LivePixelSorter(Plugin):
     name = "Live Pixel Sorter"

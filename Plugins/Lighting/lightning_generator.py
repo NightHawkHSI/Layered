@@ -1,5 +1,5 @@
 ﻿from PIL import Image, ImageDraw, ImageFilter
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 import random
 
 

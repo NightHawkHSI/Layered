@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from app.history import History, Snapshot, clone_stack
-from app.layer import Layer, LayerStack
+from app.core.history import History, Snapshot, clone_stack
+from app.core.layer import Layer, LayerStack
 
 
 def _stack_with(n_layers: int = 1, width: int = 4, height: int = 4) -> LayerStack:

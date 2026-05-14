@@ -20,7 +20,7 @@ import math
 import numpy as np
 from PIL import Image
 
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 
 def _map_coords(src: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:

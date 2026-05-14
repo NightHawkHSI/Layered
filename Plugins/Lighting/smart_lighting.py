@@ -1,8 +1,8 @@
 from PIL import Image, ImageFilter
 import math
 
-from app.plugin_api import Plugin, PluginContext, Setting
-from app.tools import Tool
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.tools import Tool
 
 
 # ---------------------------

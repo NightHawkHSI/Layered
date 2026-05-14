@@ -39,7 +39,8 @@ from typing import Any, Callable, Optional, Protocol
 
 from PIL import Image
 
-from .layer import Layer, LayerStack
+from app.core.layer import Layer, LayerStack
+
 from .tools import Tool, ToolContext
 
 

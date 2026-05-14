@@ -20,7 +20,7 @@ from typing import Optional
 
 from PIL import Image
 
-from .layer import LayerStack
+from app.core.layer import LayerStack
 
 
 TILE_SIZE = 256
@@ -181,7 +181,7 @@ class TileRenderer:
         # were a small canvas.
         # Adjustment layers operate on the running composite directly.
         if layer.is_adjustment:
-            from .adjustments import apply_adjustment
+            from app.core.adjustments import apply_adjustment
             filtered = apply_adjustment(base, layer.adjustment, layer.adjustment_params)
             # Apply mask + opacity through stack helper expectations.
             mask = Image.new("L", base.size, 255)
@@ -204,7 +204,7 @@ class TileRenderer:
             return Image.alpha_composite(base, tile_crop)
 
         import numpy as np
-        from .blending import composite as np_composite
+        from app.core.blending import composite as np_composite
         base_arr = np.asarray(base, dtype=np.float32) / 255.0
         top_arr = np.asarray(tile_crop, dtype=np.float32) / 255.0
         out = np_composite(base_arr, top_arr, layer.blend_mode, layer.opacity)

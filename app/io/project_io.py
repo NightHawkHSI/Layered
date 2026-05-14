@@ -19,8 +19,8 @@ from typing import Optional
 
 from PIL import Image
 
-from .layer import Layer, LayerStack
-from .project import Project, Selection
+from app.core.layer import Layer, LayerStack
+from app.core.project import Project, Selection
 
 
 PROJECT_EXT = ".layered"

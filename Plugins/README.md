@@ -30,8 +30,8 @@ Plugins/
 └── 📁 Utility/        # Crop, flip, sharpen, plugin builder, …
 ```
 
-> `Plugins/Brushes/` is loaded by `app.tool_loader`, the rest by
-> `app.plugin_loader`. Files prefixed with `_` (e.g. `_shared.py`) are
+> `Plugins/Brushes/` is loaded by `app.plugins.tool_loader`, the rest by
+> `app.plugins.plugin_loader`. Files prefixed with `_` (e.g. `_shared.py`) are
 > skipped by both loaders — use the underscore prefix for shared
 > helpers that should not auto-register.
 >
@@ -60,12 +60,12 @@ Subfolders **without** an `__init__.py` are treated as **category buckets**, not
 
 ## ✍️ Writing a Plugin
 
-Every plugin file must define a class subclassing `Plugin` from `app.plugin_api` and implement `register(self, ctx)`:
+Every plugin file must define a class subclassing `Plugin` from `app.plugins.plugin_api` and implement `register(self, ctx)`:
 
 ```python
 # Plugins/Color/my_filter.py
 from PIL import Image, ImageOps
-from app.plugin_api import Plugin, PluginContext
+from app.plugins.plugin_api import Plugin, PluginContext
 
 
 class GrayscalePlugin(Plugin):

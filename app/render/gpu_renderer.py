@@ -26,7 +26,7 @@ from typing import Optional
 import numpy as np
 from PIL import Image
 
-from .layer import LayerStack
+from app.core.layer import LayerStack
 
 
 try:  # soft-import — moderngl is optional
@@ -230,7 +230,7 @@ class GpuRenderer:
         """Read GPU composite back, apply CPU adjustment, write to dst_fbo."""
         w, h = self.stack.width, self.stack.height
         base = Image.frombytes("RGBA", (w, h), src_fbo.read(components=4))
-        from .adjustments import apply_adjustment
+        from app.core.adjustments import apply_adjustment
         filtered = apply_adjustment(base, layer.adjustment, layer.adjustment_params)
         mask = Image.new("L", (w, h), 255)
         if layer.mask is not None and layer.mask_enabled:

@@ -1,7 +1,7 @@
 # alpha_threshold.py
 import numpy as np
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _alpha(img, *, threshold=128):
     img = img.convert("RGBA")

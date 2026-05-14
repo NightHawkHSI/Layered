@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _emergency_crash(exc_type, exc_value, exc_tb) -> Path:
-    """Write a crash file even if app.logger could not import."""
+    """Write a crash file even if app.app_ui.logger could not import."""
     from datetime import datetime
     if getattr(sys, "frozen", False):
         err_dir = Path(sys.executable).resolve().parent / "logs" / "errors"
@@ -132,9 +132,9 @@ def main() -> int:
     # numpy, plugin_loader, UI panels) is deferred until the shell window
     # is on screen.
     try:
-        from PyQt6.QtCore import QTimer
-        from PyQt6.QtGui import QIcon
-        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt, QTimer
+        from PyQt6.QtGui import QColor, QIcon, QPixmap
+        from PyQt6.QtWidgets import QApplication, QSplashScreen
     except Exception:
         report = _emergency_crash(*sys.exc_info())
         msg = (
@@ -162,19 +162,44 @@ def main() -> int:
     if app_icon is not None:
         app.setWindowIcon(app_icon)
 
+    # Show a splash immediately so the user gets instant feedback while the
+    # heavy imports and full window construction run. Without it the process
+    # appears to hang, then a half-built shell window flashes on screen.
+    splash = None
+    if ICON_PNG_PATH.exists():
+        pix = QPixmap(str(ICON_PNG_PATH))
+        if not pix.isNull():
+            pix = pix.scaled(
+                256, 256,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            splash = QSplashScreen(pix)
+            splash.showMessage(
+                "Loading Layered…",
+                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                QColor(220, 221, 222),
+            )
+            splash.show()
+            app.processEvents()
+
     holder: dict = {"window": None}
 
     def _bring_up_main() -> None:
         try:
-            from app.logger import get_logger, install_excepthook
+            from app.app_ui.logger import get_logger, install_excepthook
             install_excepthook()
             log = get_logger("main")
             log.info("Layered starting up")
             from app.main_window import MainWindow
             win = MainWindow()
             win.show()
+            if splash is not None:
+                splash.finish(win)
             holder["window"] = win
         except Exception:
+            if splash is not None:
+                splash.close()
             try:
                 report = _emergency_crash(*sys.exc_info())
                 msg = f"Layered failed to start. Crash report: {report}\n"

@@ -1,7 +1,7 @@
 """Drop shadow filter — adds a soft offset shadow under opaque pixels."""
 from PIL import Image, ImageFilter
 
-from app.plugin_api import Plugin, PluginContext, Setting
+from app.plugins.plugin_api import Plugin, PluginContext, Setting
 
 
 class DropShadowPlugin(Plugin):

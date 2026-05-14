@@ -24,8 +24,8 @@ from PyQt6.QtCore import QBuffer, QIODevice
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from ..layer import Layer
-from ..project import Project, Selection
+from app.core.layer import Layer
+from app.core.project import Project, Selection
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow

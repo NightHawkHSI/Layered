@@ -13,8 +13,8 @@ from typing import Optional
 
 from PIL import Image
 
-from .layer import LayerStack
-from .logger import get_logger
+from app.app_ui.logger import get_logger
+from app.core.layer import LayerStack
 
 log = get_logger("export")
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import textwrap
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 
 class PluginBuilder(Plugin):
@@ -57,7 +57,7 @@ class PluginBuilder(Plugin):
                 f'"""\n'
                 f'from __future__ import annotations\n'
                 f'from PIL import Image, ImageOps, ImageFilter\n'
-                f'from app.plugin_api import Plugin, Setting\n'
+                f'from app.plugins.plugin_api import Plugin, Setting\n'
                 f'\n'
                 f'\n'
                 f'class {class_name}Plugin(Plugin):\n'

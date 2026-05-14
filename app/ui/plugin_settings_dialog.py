@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..plugin_api import Setting
+from app.plugins.plugin_api import Setting
 
 
 class PluginSettingsDialog(QDialog):

@@ -1,6 +1,6 @@
 # pixelate.py
 from PIL import Image
-from app.plugin_api import Plugin, Setting
+from app.plugins.plugin_api import Plugin, Setting
 
 def _pixel(img, *, size=8):
     w,h = img.size

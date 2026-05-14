@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..tools import ToolContext
+from app.plugins.tools import ToolContext
 
 
 class TextPanel(QWidget):
